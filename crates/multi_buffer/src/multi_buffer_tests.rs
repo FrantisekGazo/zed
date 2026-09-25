@@ -7378,7 +7378,9 @@ async fn test_block_word_diff_hides_retained_base_text(cx: &mut TestAppContext) 
             .row_infos(MultiBufferRow(0))
             .map(|info| info.is_block_diff)
             .collect::<Vec<_>>(),
-        vec![false, true, true, true, true, true, true, false, false, false]
+        vec![
+            false, true, true, true, true, true, true, false, false, false
+        ]
     );
 
     // Revealing survives diff updates caused by unrelated edits.
@@ -7446,7 +7448,10 @@ async fn test_block_word_diff_shows_changed_base_text(cx: &mut TestAppContext) {
             "
         )
     );
-    assert_eq!(snapshot.hunk_base_text_hidden(Anchor::Min..Anchor::Max), None);
+    assert_eq!(
+        snapshot.hunk_base_text_hidden(Anchor::Min..Anchor::Max),
+        None
+    );
     let text = snapshot.text();
     assert_eq!(
         snapshot
@@ -7460,4 +7465,235 @@ async fn test_block_word_diff_shows_changed_base_text(cx: &mut TestAppContext) {
             (",".to_string(), WordDiffKind::Inserted),
         ]
     );
+}
+
+#[gpui::test]
+async fn test_toggle_base_text_for_single_hunk(cx: &mut TestAppContext) {
+    set_block_word_diff_style(cx);
+    let base_text = "foo(1)\nsame\nbar(2)\n";
+    let text = "wrap(\n  foo(1),\n)\nsame\nwrap(\n  bar(2),\n)\n";
+    let buffer = cx.new(|cx| Buffer::local(text, cx));
+    let diff = cx
+        .new(|cx| BufferDiff::new_with_base_text(base_text, &buffer.read(cx).text_snapshot(), cx));
+    cx.run_until_parked();
+
+    let multibuffer = cx.new(|cx| {
+        let mut multibuffer = MultiBuffer::singleton(buffer.clone(), cx);
+        multibuffer.add_diff(diff.clone(), cx);
+        multibuffer.set_all_diff_hunks_expanded(cx);
+        multibuffer
+    });
+    let (mut snapshot, mut subscription) = multibuffer.update(cx, |multibuffer, cx| {
+        (multibuffer.snapshot(cx), multibuffer.subscribe())
+    });
+    let first_hunk_range = snapshot
+        .diff_hunks()
+        .next()
+        .map(|hunk| hunk.multi_buffer_range)
+        .unwrap();
+
+    multibuffer.update(cx, |multibuffer, cx| {
+        multibuffer.toggle_base_text_for_single_hunk(first_hunk_range.clone(), cx);
+    });
+    assert_new_snapshot(
+        &multibuffer,
+        &mut snapshot,
+        &mut subscription,
+        cx,
+        indoc!(
+            "
+            - foo(1)
+            + wrap(
+            +   foo(1),
+            + )
+              same
+            + wrap(
+            +   bar(2),
+            + )
+            "
+        ),
+    );
+
+    // Toggling ranges that end on the line above a hunk affects that hunk,
+    // like expanding and collapsing hunks does.
+    multibuffer.update(cx, |multibuffer, cx| {
+        let same_row = snapshot.anchor_before(Point::new(4, 0));
+        multibuffer.toggle_base_text_for_hunks(vec![same_row..same_row], cx);
+    });
+    assert_new_snapshot(
+        &multibuffer,
+        &mut snapshot,
+        &mut subscription,
+        cx,
+        indoc!(
+            "
+            - foo(1)
+            + wrap(
+            +   foo(1),
+            + )
+              same
+            - bar(2)
+            + wrap(
+            +   bar(2),
+            + )
+            "
+        ),
+    );
+}
+
+fn hunks_base_text_hidden(
+    multibuffer: &Entity<MultiBuffer>,
+    cx: &mut TestAppContext,
+) -> Vec<Option<bool>> {
+    let snapshot = multibuffer.read_with(cx, |multibuffer, cx| multibuffer.snapshot(cx));
+    snapshot
+        .diff_hunks()
+        .map(|hunk| snapshot.hunk_base_text_hidden(hunk.multi_buffer_range))
+        .collect()
+}
+
+#[gpui::test]
+async fn test_block_word_diff_across_excerpts(cx: &mut TestAppContext) {
+    set_block_word_diff_style(cx);
+    let unchanged = "same\n".repeat(10);
+    let base_text = format!("foo(1)\n{unchanged}bar(2)\n");
+    let text = format!("wrap(\n  foo(1),\n)\n{unchanged}wrap(\n  bar(2),\n)\n");
+    let buffer = cx.new(|cx| Buffer::local(text, cx));
+    let diff = cx
+        .new(|cx| BufferDiff::new_with_base_text(&base_text, &buffer.read(cx).text_snapshot(), cx));
+    cx.run_until_parked();
+
+    let multibuffer = cx.new(|cx| {
+        let mut multibuffer = MultiBuffer::new(Capability::ReadWrite);
+        multibuffer.set_excerpts_for_path(
+            PathKey::sorted(0),
+            buffer.clone(),
+            [
+                Point::new(1, 0)..Point::new(1, 0),
+                Point::new(14, 0)..Point::new(14, 0),
+            ],
+            1,
+            cx,
+        );
+        multibuffer.add_diff(diff.clone(), cx);
+        multibuffer.set_all_diff_hunks_expanded(cx);
+        multibuffer
+    });
+    assert_eq!(
+        multibuffer.read_with(cx, |multibuffer, cx| multibuffer
+            .snapshot(cx)
+            .excerpts()
+            .count()),
+        2
+    );
+    assert_eq!(
+        hunks_base_text_hidden(&multibuffer, cx),
+        vec![Some(true), Some(true)]
+    );
+
+    let second_hunk_range = multibuffer.read_with(cx, |multibuffer, cx| {
+        multibuffer
+            .snapshot(cx)
+            .diff_hunks()
+            .nth(1)
+            .map(|hunk| hunk.multi_buffer_range)
+            .unwrap()
+    });
+    multibuffer.update(cx, |multibuffer, cx| {
+        multibuffer.toggle_base_text_for_single_hunk(second_hunk_range, cx);
+    });
+    assert_eq!(
+        hunks_base_text_hidden(&multibuffer, cx),
+        vec![Some(true), Some(false)]
+    );
+    let text = multibuffer.read_with(cx, |multibuffer, cx| multibuffer.snapshot(cx).text());
+    assert!(!text.contains("foo(1)\nwrap("));
+    assert!(text.contains("bar(2)\nwrap(\n  bar(2),"));
+}
+
+#[gpui::test]
+async fn test_block_word_diff_edits_change_hidden_base_text(cx: &mut TestAppContext) {
+    set_block_word_diff_style(cx);
+    let base_text = "foo(1)\nsame\n";
+    let buffer = cx.new(|cx| Buffer::local("wrap(\n  foo(1),\n)\nsame\n", cx));
+    let diff = cx
+        .new(|cx| BufferDiff::new_with_base_text(base_text, &buffer.read(cx).text_snapshot(), cx));
+    cx.run_until_parked();
+    let multibuffer = cx.new(|cx| {
+        let mut multibuffer = MultiBuffer::singleton(buffer.clone(), cx);
+        multibuffer.add_diff(diff.clone(), cx);
+        multibuffer.set_all_diff_hunks_expanded(cx);
+        multibuffer
+    });
+    let edit_argument = |new_argument: &str, cx: &mut TestAppContext| {
+        buffer.update(cx, |buffer, cx| {
+            let offset = buffer.text().find("foo(").unwrap() + "foo(".len();
+            buffer.edit([(offset..offset + 1, new_argument)], None, cx);
+        });
+        diff.update(cx, |diff, cx| {
+            diff.recalculate_diff_sync(&buffer.read(cx).text_snapshot(), cx)
+        });
+        cx.run_until_parked();
+    };
+    let text = |cx: &mut TestAppContext| {
+        multibuffer.read_with(cx, |multibuffer, cx| multibuffer.snapshot(cx).text())
+    };
+
+    assert_eq!(hunks_base_text_hidden(&multibuffer, cx), vec![Some(true)]);
+    assert_eq!(text(cx), "wrap(\n  foo(1),\n)\nsame\n");
+
+    edit_argument("3", cx);
+    assert_eq!(hunks_base_text_hidden(&multibuffer, cx), vec![None]);
+    assert_eq!(text(cx), "foo(1)\nwrap(\n  foo(3),\n)\nsame\n");
+
+    edit_argument("1", cx);
+    assert_eq!(hunks_base_text_hidden(&multibuffer, cx), vec![Some(true)]);
+    assert_eq!(text(cx), "wrap(\n  foo(1),\n)\nsame\n");
+
+    // A revealed hunk stays revealed while its deleted text changes.
+    multibuffer.update(cx, |multibuffer, cx| {
+        multibuffer.toggle_base_text_for_hunks(vec![Anchor::Min..Anchor::Max], cx);
+    });
+    edit_argument("3", cx);
+    edit_argument("1", cx);
+    assert_eq!(hunks_base_text_hidden(&multibuffer, cx), vec![Some(false)]);
+    assert_eq!(text(cx), "foo(1)\nwrap(\n  foo(1),\n)\nsame\n");
+}
+
+#[gpui::test]
+async fn test_block_word_diff_reveal_resets_on_collapse(cx: &mut TestAppContext) {
+    set_block_word_diff_style(cx);
+    let buffer = cx.new(|cx| Buffer::local("wrap(\n  foo(1),\n)\nsame\n", cx));
+    let diff = cx.new(|cx| {
+        BufferDiff::new_with_base_text("foo(1)\nsame\n", &buffer.read(cx).text_snapshot(), cx)
+    });
+    cx.run_until_parked();
+    let multibuffer = cx.new(|cx| {
+        let mut multibuffer = MultiBuffer::singleton(buffer.clone(), cx);
+        multibuffer.add_diff(diff.clone(), cx);
+        multibuffer
+    });
+    assert_eq!(hunks_base_text_hidden(&multibuffer, cx), vec![None]);
+
+    // Collapsed hunks have no deleted text to reveal.
+    multibuffer.update(cx, |multibuffer, cx| {
+        multibuffer.toggle_base_text_for_hunks(vec![Anchor::Min..Anchor::Min], cx);
+    });
+    assert_eq!(hunks_base_text_hidden(&multibuffer, cx), vec![None]);
+
+    multibuffer.update(cx, |multibuffer, cx| {
+        multibuffer.expand_diff_hunks(vec![Anchor::Min..Anchor::Max], cx);
+        multibuffer.toggle_base_text_for_hunks(vec![Anchor::Min..Anchor::Min], cx);
+    });
+    assert_eq!(hunks_base_text_hidden(&multibuffer, cx), vec![Some(false)]);
+
+    multibuffer.update(cx, |multibuffer, cx| {
+        multibuffer.collapse_diff_hunks(vec![Anchor::Min..Anchor::Max], cx);
+    });
+    assert_eq!(hunks_base_text_hidden(&multibuffer, cx), vec![None]);
+
+    multibuffer.update(cx, |multibuffer, cx| {
+        multibuffer.expand_diff_hunks(vec![Anchor::Min..Anchor::Max], cx);
+    });
+    assert_eq!(hunks_base_text_hidden(&multibuffer, cx), vec![Some(true)]);
 }

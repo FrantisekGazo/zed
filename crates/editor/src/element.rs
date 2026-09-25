@@ -4732,8 +4732,7 @@ impl EditorElement {
         // The converter walks each display-map layer with a forward-only cursor,
         // so it must receive ranges in non-decreasing order. Word diffs are
         // disjoint, so sorting by offset yields a monotonic sequence.
-        visible_word_diffs
-            .sort_unstable_by_key(|(word_diff, _)| (word_diff.start, word_diff.end));
+        visible_word_diffs.sort_unstable_by_key(|(word_diff, _)| (word_diff.start, word_diff.end));
 
         let mut converter = snapshot.display_snapshot.display_point_converter();
         for (word_diff, kind) in visible_word_diffs {

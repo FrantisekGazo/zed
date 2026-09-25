@@ -759,7 +759,10 @@ mod tests {
                 ],
                 vec![
                     ("Padding(", WordDiffKind::Inserted),
-                    ("padding: const EdgeInsets.all(8.0),", WordDiffKind::Inserted),
+                    (
+                        "padding: const EdgeInsets.all(8.0),",
+                        WordDiffKind::Inserted
+                    ),
                     ("child:", WordDiffKind::Inserted),
                     ("firstWhereOrNull", WordDiffKind::Modified),
                     ("!= null", WordDiffKind::Modified),
