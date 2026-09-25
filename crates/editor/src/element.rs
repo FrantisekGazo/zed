@@ -54,7 +54,7 @@ use gpui::{
 };
 use itertools::Itertools;
 use language::{
-    Diagnostic, HighlightedText, IndentGuideSettings, LanguageAwareStyling,
+    Diagnostic, HighlightedText, IndentGuideSettings, LanguageAwareStyling, WordDiffKind,
     language_settings::ShowWhitespaceSetting,
 };
 use markdown::Markdown;
@@ -4716,7 +4716,7 @@ impl EditorElement {
         // word diffs for its entire range, so without this filter a large hunk
         // that is only partially scrolled into view would cost work
         // proportional to its whole size every frame.
-        let mut visible_word_diffs: Vec<&Range<MultiBufferOffset>> = display_hunks
+        let mut visible_word_diffs: Vec<&(Range<MultiBufferOffset>, WordDiffKind)> = display_hunks
             .iter()
             .filter_map(|(hunk, _)| match hunk {
                 DisplayDiffHunk::Unfolded {
@@ -4725,16 +4725,17 @@ impl EditorElement {
                 _ => None,
             })
             .flatten()
-            .filter(|word_diff| word_diff.start < visible_end && word_diff.end > visible_start)
+            .filter(|(word_diff, _)| word_diff.start < visible_end && word_diff.end > visible_start)
             .collect();
 
         // The converter walks each display-map layer with a forward-only cursor,
         // so it must receive ranges in non-decreasing order. Word diffs are
         // disjoint, so sorting by offset yields a monotonic sequence.
-        visible_word_diffs.sort_unstable_by_key(|word_diff| (word_diff.start, word_diff.end));
+        visible_word_diffs
+            .sort_unstable_by_key(|(word_diff, _)| (word_diff.start, word_diff.end));
 
         let mut converter = snapshot.display_snapshot.display_point_converter();
-        for word_diff in visible_word_diffs {
+        for (word_diff, _) in visible_word_diffs {
             for range in converter.map(word_diff.start..word_diff.end) {
                 let start_row_offset = range.start.row().0.saturating_sub(start_row.0) as usize;
 
@@ -11616,6 +11617,7 @@ mod tests {
             diff_status: None,
             expand_info: None,
             wrapped_buffer_row: None,
+            is_block_diff: false,
         };
 
         const fn row_info(row: u32) -> RowInfo {
