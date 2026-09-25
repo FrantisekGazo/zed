@@ -1025,7 +1025,7 @@ impl GitStore {
                     .filter_map(|buffer_id| buffer_store.get(*buffer_id))
                     .collect();
                 let recalculation = this.recalculate_buffer_diffs(buffers, cx);
-                cx.background_spawn(recalculation).detach();
+                cx.spawn(async move |_, _| recalculation.await).detach();
             }
             this.activate_parked_repositories_where_parking_disabled(cx);
         }));

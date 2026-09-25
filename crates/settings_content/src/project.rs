@@ -866,7 +866,8 @@ pub enum GitHunkStyleSetting {
 pub enum WordDiffStyle {
     /// Compare whole hunks word by word, matching re-indented lines with their
     /// original lines. Unified diffs show only the new text of such hunks, with
-    /// the changes highlighted within it.
+    /// the changes highlighted within it. Hunks larger than 32 KiB on either
+    /// side are shown as with `lines`.
     #[default]
     Block,
     /// Only highlight changed words within small hunks that replace the same

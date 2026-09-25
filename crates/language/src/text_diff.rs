@@ -337,8 +337,8 @@ pub fn block_word_diff(
         new_unchanged_line,
         &mut matched_tokens,
     );
-    matched_tokens.sort_unstable();
 
+    debug_assert!(matched_tokens.windows(2).all(|pair| pair[0] < pair[1]));
     if matched_tokens.first() == Some(&(0, 0)) {
         differ.compare_gaps(0, 0);
     }
@@ -355,9 +355,33 @@ pub fn block_word_diff(
     }
 
     let mut result = differ.result;
-    result.old.sort_by_key(|(range, _)| range.start);
-    result.new.sort_by_key(|(range, _)| range.start);
+    coalesce_ranges(&mut result.old);
+    coalesce_ranges(&mut result.new);
     Some(result)
+}
+
+/// Sorts the ranges and merges overlapping ones, because the same whitespace
+/// can be compared from both of the changed regions around it, while consumers
+/// expect disjoint ranges.
+fn coalesce_ranges(ranges: &mut Vec<(Range<usize>, WordDiffKind)>) {
+    ranges.sort_by_key(|(range, _)| (range.start, range.end));
+    let mut coalesced: Vec<(Range<usize>, WordDiffKind)> = Vec::with_capacity(ranges.len());
+    for (mut range, kind) in ranges.drain(..) {
+        if let Some((previous_range, previous_kind)) = coalesced.last_mut()
+            && range.start < previous_range.end
+        {
+            if kind == *previous_kind {
+                previous_range.end = previous_range.end.max(range.end);
+                continue;
+            }
+            range.start = previous_range.end;
+            if range.is_empty() {
+                continue;
+            }
+        }
+        coalesced.push((range, kind));
+    }
+    *ranges = coalesced;
 }
 
 /// Pairs up the old tokens in the given range with the new tokens starting at
@@ -1278,6 +1302,65 @@ mod tests {
                 vec![("\n", WordDiffKind::Modified)]
             ))
         );
+    }
+
+    #[test]
+    fn test_block_word_diff_ranges_are_disjoint() {
+        for (old_text, new_text) in [
+            ("a = foo\n\nbar = b\n", "    a = baz\n\n    qux = b\n"),
+            ("\nb\n", "  \na\nb\n"),
+        ] {
+            let diff = block_word_diff(old_text, new_text, None).unwrap();
+            for ranges in [&diff.old, &diff.new] {
+                for pair in ranges.windows(2) {
+                    assert!(
+                        pair[0].0.end <= pair[1].0.start,
+                        "overlapping ranges {pair:?} for {old_text:?} -> {new_text:?}"
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            render_positions(
+                "    a = baz\n\n    qux = b\n",
+                &block_word_diff("a = foo\n\nbar = b\n", "    a = baz\n\n    qux = b\n", None)
+                    .unwrap()
+                    .new
+            ),
+            vec!["0:0 \"    \"", "0:8 \"baz\"", "2:0 \"    \"", "2:4 \"qux\""]
+        );
+    }
+
+    #[gpui::test(iterations = 100)]
+    fn test_random_block_word_diffs(mut rng: rand::rngs::StdRng) {
+        use rand::prelude::*;
+        let pieces = [
+            "foo", "bar", "(", ")", ",", "==", " ", "  ", "\t", "\n", "\n  ", "é",
+        ];
+        let random_text = |rng: &mut StdRng| {
+            let len = rng.random_range(1..30);
+            (0..len)
+                .map(|_| *pieces.choose(rng).unwrap())
+                .collect::<String>()
+        };
+        let old_text = random_text(&mut rng);
+        let new_text = random_text(&mut rng);
+        let Some(diff) = block_word_diff(&old_text, &new_text, None) else {
+            return;
+        };
+        for (text, ranges) in [(&old_text, &diff.old), (&new_text, &diff.new)] {
+            for (range, _) in ranges {
+                assert!(!range.is_empty(), "{range:?} in {text:?}");
+                assert!(range.end <= text.len(), "{range:?} in {text:?}");
+                assert!(text.is_char_boundary(range.start) && text.is_char_boundary(range.end));
+            }
+            for pair in ranges.windows(2) {
+                assert!(
+                    pair[0].0.end <= pair[1].0.start,
+                    "overlapping {pair:?} for {old_text:?} -> {new_text:?}"
+                );
+            }
+        }
     }
 
     #[test]
