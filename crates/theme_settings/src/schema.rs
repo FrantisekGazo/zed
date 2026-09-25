@@ -19,6 +19,7 @@ const LIGHT_DIFF_HUNK_HOLLOW_BORDER_OPACITY: f32 = 0.48;
 const DARK_DIFF_HUNK_FILLED_OPACITY: f32 = 0.12;
 const DARK_DIFF_HUNK_HOLLOW_BACKGROUND_OPACITY: f32 = 0.06;
 const DARK_DIFF_HUNK_HOLLOW_BORDER_OPACITY: f32 = 0.36;
+const WORD_DIFF_OPACITY: f32 = 0.35;
 
 /// The content of a serialized theme family.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -296,6 +297,11 @@ pub fn theme_colors_refinement(
         .as_ref()
         .and_then(|color| try_parse_color(color).ok())
         .or(status_colors.deleted);
+    let version_control_modified = this
+        .version_control_modified
+        .as_ref()
+        .and_then(|color| try_parse_color(color).ok())
+        .or(status_colors.modified);
     let (hunk_fill, hunk_hollow_bg, hunk_hollow_border) = if is_light {
         (
             LIGHT_DIFF_HUNK_FILLED_OPACITY,
@@ -641,6 +647,21 @@ pub fn theme_colors_refinement(
             .as_ref()
             .and_then(|color| try_parse_color(color).ok())
             .or_else(|| version_control_deleted.map(|c| c.opacity(hunk_hollow_border))),
+        editor_diff_hunk_modified_background: this
+            .editor_diff_hunk_modified_background
+            .as_ref()
+            .and_then(|color| try_parse_color(color).ok())
+            .or_else(|| version_control_modified.map(|c| c.opacity(hunk_fill))),
+        editor_diff_hunk_modified_hollow_background: this
+            .editor_diff_hunk_modified_hollow_background
+            .as_ref()
+            .and_then(|color| try_parse_color(color).ok())
+            .or_else(|| version_control_modified.map(|c| c.opacity(hunk_hollow_bg))),
+        editor_diff_hunk_modified_hollow_border: this
+            .editor_diff_hunk_modified_hollow_border
+            .as_ref()
+            .and_then(|color| try_parse_color(color).ok())
+            .or_else(|| version_control_modified.map(|c| c.opacity(hunk_hollow_border))),
         terminal_background: this
             .terminal_background
             .as_ref()
@@ -763,11 +784,7 @@ pub fn theme_colors_refinement(
             .and_then(|color| try_parse_color(color).ok()),
         version_control_added,
         version_control_deleted,
-        version_control_modified: this
-            .version_control_modified
-            .as_ref()
-            .and_then(|color| try_parse_color(color).ok())
-            .or(status_colors.modified),
+        version_control_modified,
         version_control_renamed: this
             .version_control_renamed
             .as_ref()
@@ -791,6 +808,11 @@ pub fn theme_colors_refinement(
             .version_control_word_deleted
             .as_ref()
             .and_then(|color| try_parse_color(color).ok()),
+        version_control_word_modified: this
+            .version_control_word_modified
+            .as_ref()
+            .and_then(|color| try_parse_color(color).ok())
+            .or_else(|| version_control_modified.map(|c| c.opacity(WORD_DIFF_OPACITY))),
         #[allow(deprecated)]
         version_control_conflict_marker_ours: this
             .version_control_conflict_marker_ours
@@ -1047,6 +1069,46 @@ mod tests {
         assert_eq!(
             dark_refinement.editor_diff_hunk_added_hollow_border,
             Some(added.opacity(0.36))
+        );
+    }
+
+    #[test]
+    fn modified_diff_colors_fall_back_to_version_control_modified() {
+        let mut colors = ThemeColorsContent::default();
+        colors.version_control_modified = Some("#0000ff".into());
+        let refinement = theme_colors_refinement(
+            &colors,
+            &status_colors_refinement(&StatusColorsContent::default()),
+            false,
+        );
+
+        let modified = parse_color("#0000ff");
+        assert_eq!(
+            refinement.editor_diff_hunk_modified_background,
+            Some(modified.opacity(0.12))
+        );
+        assert_eq!(
+            refinement.editor_diff_hunk_modified_hollow_background,
+            Some(modified.opacity(0.06))
+        );
+        assert_eq!(
+            refinement.editor_diff_hunk_modified_hollow_border,
+            Some(modified.opacity(0.36))
+        );
+        assert_eq!(
+            refinement.version_control_word_modified,
+            Some(modified.opacity(0.35))
+        );
+
+        colors.version_control_word_modified = Some("#ff0000".into());
+        let refinement = theme_colors_refinement(
+            &colors,
+            &status_colors_refinement(&StatusColorsContent::default()),
+            false,
+        );
+        assert_eq!(
+            refinement.version_control_word_modified,
+            Some(parse_color("#ff0000"))
         );
     }
 

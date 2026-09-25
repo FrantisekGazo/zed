@@ -191,6 +191,9 @@ pub(crate) fn zed_default_dark() -> Theme {
                 editor_diff_hunk_deleted_background: REMOVED_COLOR.opacity(0.12),
                 editor_diff_hunk_deleted_hollow_background: REMOVED_COLOR.opacity(0.06),
                 editor_diff_hunk_deleted_hollow_border: REMOVED_COLOR.opacity(0.36),
+                editor_diff_hunk_modified_background: MODIFIED_COLOR.opacity(0.12),
+                editor_diff_hunk_modified_hollow_background: MODIFIED_COLOR.opacity(0.06),
+                editor_diff_hunk_modified_hollow_border: MODIFIED_COLOR.opacity(0.36),
 
                 terminal_background: bg,
                 // todo("Use one colors for terminal")
@@ -257,6 +260,7 @@ pub(crate) fn zed_default_dark() -> Theme {
                 version_control_ignored: crate::gray().light().step_12(),
                 version_control_word_added: WORD_ADDED_COLOR,
                 version_control_word_deleted: WORD_DELETED_COLOR,
+                version_control_word_modified: MODIFIED_COLOR.opacity(0.35),
                 version_control_conflict_marker_ours: crate::green().light().step_12().alpha(0.5),
                 version_control_conflict_marker_theirs: crate::blue().light().step_12().alpha(0.5),
 

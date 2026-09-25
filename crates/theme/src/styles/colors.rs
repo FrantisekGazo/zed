@@ -257,6 +257,15 @@ pub struct ThemeColors {
     pub editor_diff_hunk_deleted_hollow_background: Hsla,
     /// Hollow border color for deleted diff hunk row highlights in the editor.
     pub editor_diff_hunk_deleted_hollow_border: Hsla,
+    /// Filled background color for rows of diff hunks whose changed words are
+    /// highlighted across the whole hunk.
+    pub editor_diff_hunk_modified_background: Hsla,
+    /// Hollow background color for rows of diff hunks whose changed words are
+    /// highlighted across the whole hunk.
+    pub editor_diff_hunk_modified_hollow_background: Hsla,
+    /// Hollow border color for rows of diff hunks whose changed words are
+    /// highlighted across the whole hunk.
+    pub editor_diff_hunk_modified_hollow_border: Hsla,
 
     // ===
     // Terminal
@@ -339,6 +348,8 @@ pub struct ThemeColors {
     pub version_control_word_added: Hsla,
     /// Represents a deleted word in a word diff.
     pub version_control_word_deleted: Hsla,
+    /// Represents a word that was replaced by another word in a word diff.
+    pub version_control_word_modified: Hsla,
     /// Represents the "ours" region of a merge conflict.
     pub version_control_conflict_marker_ours: Hsla,
     /// Represents the "theirs" region of a merge conflict.
