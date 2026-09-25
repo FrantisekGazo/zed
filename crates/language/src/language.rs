@@ -30,7 +30,7 @@ mod proto_diagnostics_tests;
 
 pub use crate::language_settings::{
     AutoIndentMode, EditPredictionPromptFormat, EditPredictionsMode, IndentGuideSettings,
-    ZetaVersion,
+    WordDiffSettings, WordDiffStyle, ZetaVersion,
 };
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
@@ -91,7 +91,8 @@ use syntax_map::{QueryCursorHandle, TextProvider, flatten_capture_regions};
 use task::RunnableTag;
 pub use task_context::{ContextLocation, ContextProvider};
 pub use text_diff::{
-    DiffOptions, apply_diff_patch, apply_reversed_diff_patch, char_diff, line_diff, text_diff,
+    BlockWordDiff, DiffOptions, MAX_BLOCK_WORD_DIFF_LEN, WordDiffKind, apply_diff_patch,
+    block_word_diff, apply_reversed_diff_patch, char_diff, line_diff, text_diff,
     text_diff_with_options, unified_diff, unified_diff_with_context, unified_diff_with_offsets,
     word_diff_ranges,
 };
