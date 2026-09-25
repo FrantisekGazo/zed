@@ -5365,7 +5365,7 @@ impl EditorElement {
                         is_block_diff,
                         ..
                     } => hitbox.as_ref().map(|hunk_hitbox| {
-                        let color = diff_hunk_gutter_color(
+                        let color = diff_hunk_marker_color(
                             split_side,
                             status.kind,
                             *is_block_diff,
@@ -6372,17 +6372,12 @@ impl EditorElement {
                                         if end_display_row != start_display_row {
                                             end_display_row.0 -= 1;
                                         }
-                                        let color = match &hunk.status().kind {
-                                            DiffHunkStatusKind::Added => {
-                                                theme.colors().version_control_added
-                                            }
-                                            DiffHunkStatusKind::Modified => {
-                                                theme.colors().version_control_modified
-                                            }
-                                            DiffHunkStatusKind::Deleted => {
-                                                theme.colors().version_control_deleted
-                                            }
-                                        };
+                                        let color = diff_hunk_marker_color(
+                                            None,
+                                            hunk.status().kind,
+                                            hunk.is_block_diff,
+                                            theme.colors(),
+                                        );
                                         ColoredRange {
                                             start: start_display_row,
                                             end: end_display_row,
@@ -11384,7 +11379,7 @@ fn diff_hunk_row_colors(
     }
 }
 
-fn diff_hunk_gutter_color(
+fn diff_hunk_marker_color(
     split_side: Option<SplitSide>,
     kind: DiffHunkStatusKind,
     is_block_diff: bool,
@@ -11586,12 +11581,12 @@ mod tests {
         let colors = theme::ThemeColors::dark();
         for split_side in [None, Some(SplitSide::Left), Some(SplitSide::Right)] {
             assert_eq!(
-                diff_hunk_gutter_color(split_side, DiffHunkStatusKind::Modified, true, &colors),
+                diff_hunk_marker_color(split_side, DiffHunkStatusKind::Modified, true, &colors),
                 colors.version_control_modified
             );
         }
         assert_eq!(
-            diff_hunk_gutter_color(
+            diff_hunk_marker_color(
                 Some(SplitSide::Left),
                 DiffHunkStatusKind::Modified,
                 false,
@@ -11600,7 +11595,7 @@ mod tests {
             colors.version_control_deleted
         );
         assert_eq!(
-            diff_hunk_gutter_color(
+            diff_hunk_marker_color(
                 Some(SplitSide::Right),
                 DiffHunkStatusKind::Modified,
                 false,
@@ -11609,7 +11604,7 @@ mod tests {
             colors.version_control_added
         );
         assert_eq!(
-            diff_hunk_gutter_color(None, DiffHunkStatusKind::Added, false, &colors),
+            diff_hunk_marker_color(None, DiffHunkStatusKind::Added, false, &colors),
             colors.version_control_added
         );
 
