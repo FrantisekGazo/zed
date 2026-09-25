@@ -6,6 +6,7 @@ use ::git::{
     status::FileStatus,
 };
 use buffer_diff::{BufferDiff, DiffHunkStatus, DiffHunkStatusKind};
+use language::WordDiffKind;
 use project::git_store::Repository;
 
 #[derive(Clone)]
@@ -118,7 +119,7 @@ pub(super) enum DisplayDiffHunk {
         display_row_range: Range<DisplayRow>,
         multi_buffer_range: Range<Anchor>,
         status: DiffHunkStatus,
-        word_diffs: Vec<Range<MultiBufferOffset>>,
+        word_diffs: Vec<(Range<MultiBufferOffset>, WordDiffKind)>,
     },
 }
 
