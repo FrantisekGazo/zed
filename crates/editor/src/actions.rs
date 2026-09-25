@@ -931,6 +931,10 @@ actions!(
         /// Toggles diff display for selected hunks.
         #[action(deprecated_aliases = ["editor::ToggleHunkDiff"])]
         ToggleSelectedDiffHunks,
+        /// Shows or hides the original text of the selected diff hunks, for hunks
+        /// whose original text is hidden because it only differs in whitespace
+        /// and insertions.
+        ToggleDiffHunkOriginal,
         /// Stores the diff review comment locally (for later batch submission).
         SubmitDiffReviewComment,
         /// Toggles the expanded state of the comments section in the overlay.

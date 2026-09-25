@@ -650,6 +650,7 @@ impl EditorElement {
             }
         }
         register_action(editor, window, Editor::toggle_selected_diff_hunks);
+        register_action(editor, window, Editor::toggle_diff_hunk_original);
         register_action(editor, window, Editor::toggle_staged_selected_diff_hunks);
         register_action(editor, window, Editor::stage_and_next);
         register_action(editor, window, Editor::unstage_and_next);
