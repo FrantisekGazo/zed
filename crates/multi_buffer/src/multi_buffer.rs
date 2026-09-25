@@ -143,10 +143,11 @@ pub struct MultiBufferDiffHunk {
     pub status: DiffHunkStatus,
     /// The word diffs for this hunk.
     pub word_diffs: Vec<(Range<MultiBufferOffset>, WordDiffKind)>,
-    /// Whether the word diffs were computed across the whole hunk, ignoring whitespace.
+    /// Whether the word diffs were computed across the whole hunk.
     pub is_block_diff: bool,
-    /// Whether the hunk's deleted text only differs from its buffer text in
-    /// whitespace and insertions, so that it is hidden unless revealed.
+    /// Whether the hunk's deleted text survives unchanged in its buffer text,
+    /// apart from insertions and added indentation, so that it is hidden unless
+    /// revealed.
     pub base_retained: bool,
     pub excerpt_range: ExcerptRange<text::Anchor>,
     pub multi_buffer_range: Range<Anchor>,
@@ -740,8 +741,8 @@ struct DiffTransformHunkInfo {
     excerpt_end: ExcerptAnchor,
     is_block_diff: bool,
     /// Whether the user chose to show the deleted text of a hunk whose deleted
-    /// text is hidden by default, because it only differs from the buffer text
-    /// in whitespace and insertions.
+    /// text is hidden by default, because the buffer text only adds code or
+    /// indentation to it.
     base_revealed: bool,
 }
 
@@ -3572,7 +3573,8 @@ impl MultiBufferSnapshot {
     }
 
     /// Returns whether any of the expanded hunks in the given range hides deleted
-    /// text that only differs from its buffer text in whitespace and insertions,
+    /// text that survives unchanged in its buffer text, apart from insertions and
+    /// added indentation,
     /// or `None` if the range contains no such hunks.
     pub fn hunk_base_text_hidden<T: ToPoint>(&self, range: Range<T>) -> Option<bool> {
         if !self.show_deleted_hunks {
