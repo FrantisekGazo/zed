@@ -1019,6 +1019,23 @@ impl Editor {
         self.toggle_diff_hunks_in_ranges(ranges, cx);
     }
 
+    pub(super) fn toggle_diff_hunk_original(
+        &mut self,
+        _: &ToggleDiffHunkOriginal,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let ranges: Vec<_> = self
+            .selections
+            .disjoint_anchors()
+            .iter()
+            .map(|selection| selection.range())
+            .collect();
+        self.buffer.update(cx, |buffer, cx| {
+            buffer.toggle_base_text_for_hunks(ranges, cx);
+        });
+    }
+
     pub(super) fn show_diff_review_button(&self) -> bool {
         self.show_diff_review_button
     }

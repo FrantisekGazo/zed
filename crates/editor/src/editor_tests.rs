@@ -31444,6 +31444,59 @@ async fn test_merge_base_diff_hunks_are_read_only(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+async fn test_toggle_diff_hunk_original(executor: BackgroundExecutor, cx: &mut TestAppContext) {
+    init_test(cx, |_| {});
+    cx.update(|cx| {
+        SettingsStore::update_global(cx, |store, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings.git.get_or_insert_default().word_diff_style =
+                    Some(settings::WordDiffStyle::Block);
+            });
+        });
+    });
+    let mut cx = EditorTestContext::new(cx).await;
+
+    cx.set_state("a\nreturn Padding(\n  child: Foo(\n    ˇx: 1,\n  ),\n);\nb\n");
+    cx.set_head_text("a\nreturn Foo(\n  x: 1,\n);\nb\n");
+    executor.run_until_parked();
+    cx.update_editor(|editor, window, cx| {
+        editor.expand_all_diff_hunks(&ExpandAllDiffHunks, window, cx);
+    });
+    executor.run_until_parked();
+    let hidden_state = "  a\n+ return Padding(\n+   child: Foo(\n+     ˇx: 1,\n+   ),\n  );\n  b\n";
+    cx.assert_state_with_diff(hidden_state.to_string());
+
+    let hunk_ranges = |cx: &mut EditorTestContext| {
+        cx.update_editor(|editor, _, cx| {
+            editor
+                .buffer()
+                .read(cx)
+                .snapshot(cx)
+                .diff_hunks()
+                .map(|hunk| (hunk.buffer_range, hunk.diff_base_byte_range))
+                .collect::<Vec<_>>()
+        })
+    };
+    let hunk_ranges_before = hunk_ranges(&mut cx);
+
+    cx.update_editor(|editor, window, cx| {
+        editor.toggle_diff_hunk_original(&ToggleDiffHunkOriginal, window, cx);
+    });
+    executor.run_until_parked();
+    cx.assert_state_with_diff(
+        "  a\n- return Foo(\n-   x: 1,\n+ return Padding(\n+   child: Foo(\n+     ˇx: 1,\n+   ),\n  );\n  b\n"
+            .to_string(),
+    );
+    assert_eq!(hunk_ranges(&mut cx), hunk_ranges_before);
+
+    cx.update_editor(|editor, window, cx| {
+        editor.toggle_diff_hunk_original(&ToggleDiffHunkOriginal, window, cx);
+    });
+    executor.run_until_parked();
+    cx.assert_state_with_diff(hidden_state.to_string());
+}
+
+#[gpui::test]
 async fn test_toggle_selected_diff_hunks(executor: BackgroundExecutor, cx: &mut TestAppContext) {
     init_test(cx, |_| {});
 
