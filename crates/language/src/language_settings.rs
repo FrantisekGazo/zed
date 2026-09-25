@@ -15,6 +15,7 @@ use gpui::{App, Modifiers, SharedString};
 use itertools::Itertools;
 use settings::{DelayMs, DocumentFoldingRanges, DocumentSymbols, IntoGpui, SemanticTokens};
 
+pub use settings::WordDiffStyle;
 pub use settings::{
     AutoIndentMode, CompletionSettingsContent, ConfiguredLanguageServer,
     EditPredictionDataCollectionChoice, EditPredictionPromptFormatContent, EditPredictionProvider,
@@ -22,7 +23,6 @@ pub use settings::{
     LanguageSettingsContent, LineEndingSetting, LspInsertMode, REST_OF_LANGUAGE_SERVERS,
     RewrapBehavior, ShowWhitespaceSetting, SoftWrap, SoftWrapIndent, WordsCompletionMode,
 };
-pub use settings::WordDiffStyle;
 use settings::{RegisterSetting, Settings, SettingsLocation, SettingsStore, merge_from::MergeFrom};
 use shellexpand;
 use std::{num::NonZeroU32, path::Path, sync::Arc, time::Duration};

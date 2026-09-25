@@ -2501,16 +2501,44 @@ impl MultiBuffer {
 
     /// Shows the deleted text of the hunks in the given ranges whose deleted text
     /// is hidden, or hides it again if it is shown for all of them.
-    pub fn toggle_base_text_for_hunks(&mut self, ranges: Vec<Range<Anchor>>, cx: &mut Context<Self>) {
+    pub fn toggle_base_text_for_hunks(
+        &mut self,
+        ranges: Vec<Range<Anchor>>,
+        cx: &mut Context<Self>,
+    ) {
         let snapshot = self.snapshot(cx);
+        let ranges = Self::hunk_query_ranges(&snapshot, &ranges);
+        self.toggle_base_text_in_ranges(&snapshot, ranges, cx);
+    }
+
+    /// Like [`Self::toggle_base_text_for_hunks`], but only for the hunks within
+    /// the given range, without including a hunk that starts on the next row.
+    pub fn toggle_base_text_for_single_hunk(
+        &mut self,
+        range: Range<Anchor>,
+        cx: &mut Context<Self>,
+    ) {
+        let snapshot = self.snapshot(cx);
+        let excerpt_end = snapshot
+            .excerpt_containing(range.end..range.end)
+            .and_then(|(_, excerpt_range)| snapshot.anchor_in_excerpt(excerpt_range.context.end));
+        let point_range = range.to_point(&snapshot);
+        self.toggle_base_text_in_ranges(&snapshot, vec![(point_range, excerpt_end)], cx);
+    }
+
+    fn toggle_base_text_in_ranges(
+        &mut self,
+        snapshot: &MultiBufferSnapshot,
+        ranges: Vec<(Range<Point>, Option<Anchor>)>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(reveal) = ranges
             .iter()
-            .filter_map(|range| snapshot.hunk_base_text_hidden(range.clone()))
+            .filter_map(|(range, _)| snapshot.hunk_base_text_hidden(range.clone()))
             .reduce(|any_hidden, hidden| any_hidden || hidden)
         else {
             return;
         };
-        let ranges = Self::hunk_query_ranges(&snapshot, &ranges);
         let edits =
             self.update_diff_hunks_in_ranges(ranges, DiffChangeKind::ToggleBaseText { reveal }, cx);
         if !edits.is_empty() {
@@ -3055,9 +3083,7 @@ impl MultiBuffer {
                                 }
                             }
                             DiffChangeKind::ToggleBaseText { .. } => {
-                                (intersects_edit && hunk.base_retained)
-                                    || was_previously_expanded
-                                    || all_diff_hunks_expanded
+                                was_previously_expanded || all_diff_hunks_expanded
                             }
                             _ => was_previously_expanded || all_diff_hunks_expanded,
                         };
@@ -3548,7 +3574,7 @@ impl MultiBufferSnapshot {
     /// Returns whether any of the expanded hunks in the given range hides deleted
     /// text that only differs from its buffer text in whitespace and insertions,
     /// or `None` if the range contains no such hunks.
-    pub fn hunk_base_text_hidden(&self, range: Range<Anchor>) -> Option<bool> {
+    pub fn hunk_base_text_hidden<T: ToPoint>(&self, range: Range<T>) -> Option<bool> {
         if !self.show_deleted_hunks {
             return None;
         }
@@ -3613,56 +3639,53 @@ impl MultiBufferSnapshot {
                 range.end.row + 1
             };
 
-            let word_diffs =
-                (!hunk.base_word_diffs.is_empty() || !hunk.buffer_word_diffs.is_empty())
-                    .then(|| {
-                        let mut word_diffs = Vec::new();
+            let word_diffs = (!hunk.base_word_diffs.is_empty()
+                || !hunk.buffer_word_diffs.is_empty())
+            .then(|| {
+                let mut word_diffs = Vec::new();
 
-                        let hunk_start_offset = if is_inverted {
-                            Anchor::in_buffer(
-                                excerpt.path_key_index,
-                                buffer_snapshot.anchor_after(hunk.diff_base_byte_range.start),
-                            )
-                            .to_offset(self)
-                        } else {
-                            Anchor::in_buffer(excerpt.path_key_index, hunk.buffer_range.start)
-                                .to_offset(self)
-                        };
+                let hunk_start_offset = if is_inverted {
+                    Anchor::in_buffer(
+                        excerpt.path_key_index,
+                        buffer_snapshot.anchor_after(hunk.diff_base_byte_range.start),
+                    )
+                    .to_offset(self)
+                } else {
+                    Anchor::in_buffer(excerpt.path_key_index, hunk.buffer_range.start)
+                        .to_offset(self)
+                };
 
-                        let hunk_has_deleted_text = !is_inverted && {
-                            let mut cursor = self.diff_transforms.cursor::<MultiBufferOffset>(());
-                            cursor.seek(&hunk_start_offset, Bias::Right);
-                            matches!(
-                                cursor.item(),
-                                Some(DiffTransform::DeletedHunk { buffer_id, hunk_info, .. })
-                                    if *buffer_id == buffer_snapshot.remote_id()
-                                        && hunk_info.hunk_start_anchor == hunk.buffer_range.start
-                            )
-                        };
+                let hunk_has_deleted_text = !is_inverted && {
+                    let mut cursor = self.diff_transforms.cursor::<MultiBufferOffset>(());
+                    cursor.seek(&hunk_start_offset, Bias::Right);
+                    matches!(
+                        cursor.item(),
+                        Some(DiffTransform::DeletedHunk { buffer_id, hunk_info, .. })
+                            if *buffer_id == buffer_snapshot.remote_id()
+                                && hunk_info.hunk_start_anchor == hunk.buffer_range.start
+                    )
+                };
 
-                        if hunk_has_deleted_text || is_inverted {
-                            word_diffs.extend(hunk.base_word_diffs.iter().map(|(diff, kind)| {
-                                (
-                                    hunk_start_offset + diff.start..hunk_start_offset + diff.end,
-                                    *kind,
-                                )
-                            }));
-                        }
+                if hunk_has_deleted_text || is_inverted {
+                    word_diffs.extend(hunk.base_word_diffs.iter().map(|(diff, kind)| {
+                        (
+                            hunk_start_offset + diff.start..hunk_start_offset + diff.end,
+                            *kind,
+                        )
+                    }));
+                }
 
-                        if !is_inverted {
-                            word_diffs.extend(hunk.buffer_word_diffs.into_iter().map(
-                                |(diff, kind)| {
-                                    (
-                                        Anchor::range_in_buffer(excerpt.path_key_index, diff)
-                                            .to_offset(self),
-                                        kind,
-                                    )
-                                },
-                            ));
-                        }
-                        word_diffs
-                    })
-                    .unwrap_or_default();
+                if !is_inverted {
+                    word_diffs.extend(hunk.buffer_word_diffs.into_iter().map(|(diff, kind)| {
+                        (
+                            Anchor::range_in_buffer(excerpt.path_key_index, diff).to_offset(self),
+                            kind,
+                        )
+                    }));
+                }
+                word_diffs
+            })
+            .unwrap_or_default();
 
             let buffer_range = if is_inverted {
                 buffer_snapshot.anchor_after(hunk.diff_base_byte_range.start)
