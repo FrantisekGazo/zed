@@ -143,12 +143,9 @@ pub struct MultiBufferDiffHunk {
     pub status: DiffHunkStatus,
     /// The word diffs for this hunk.
     pub word_diffs: Vec<(Range<MultiBufferOffset>, WordDiffKind)>,
-    /// Whether the word diffs were computed across the whole hunk.
+    /// Whether the word diffs were computed across the whole hunk, in which
+    /// case only its buffer text is shown.
     pub is_block_diff: bool,
-    /// Whether the hunk's deleted text survives unchanged in its buffer text,
-    /// apart from insertions and added indentation, so that it is hidden unless
-    /// revealed.
-    pub base_retained: bool,
     pub excerpt_range: ExcerptRange<text::Anchor>,
     pub multi_buffer_range: Range<Anchor>,
 }
@@ -740,10 +737,6 @@ struct DiffTransformHunkInfo {
     is_logically_deleted: bool,
     excerpt_end: ExcerptAnchor,
     is_block_diff: bool,
-    /// Whether the user chose to show the deleted text of a hunk whose deleted
-    /// text is hidden by default, because the buffer text only adds code or
-    /// indentation to it.
-    base_revealed: bool,
 }
 
 impl Eq for DiffTransformHunkInfo {}
@@ -1206,7 +1199,6 @@ enum DiffChangeKind {
     BufferEdited,
     DiffUpdated { base_changed: bool },
     ExpandOrCollapseHunks { expand: bool },
-    ToggleBaseText { reveal: bool },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -2444,19 +2436,6 @@ impl MultiBuffer {
         if self.snapshot.borrow().all_diff_hunks_expanded && !expand {
             return Vec::new();
         }
-        self.update_diff_hunks_in_ranges(
-            ranges,
-            DiffChangeKind::ExpandOrCollapseHunks { expand },
-            cx,
-        )
-    }
-
-    fn update_diff_hunks_in_ranges(
-        &mut self,
-        ranges: impl IntoIterator<Item = (Range<Point>, Option<Anchor>)>,
-        change_kind: DiffChangeKind,
-        cx: &mut Context<Self>,
-    ) -> Vec<Edit<MultiBufferOffset>> {
         self.sync_mut(cx);
         let mut snapshot = self.snapshot.get_mut();
         let mut excerpt_edits = Vec::new();
@@ -2497,79 +2476,11 @@ impl MultiBuffer {
             }
         }
 
-        Self::sync_diff_transforms(&mut snapshot, excerpt_edits, change_kind)
-    }
-
-    /// Shows the deleted text of the hunks in the given ranges whose deleted text
-    /// is hidden, or hides it again if it is shown for all of them.
-    pub fn toggle_base_text_for_hunks(
-        &mut self,
-        ranges: Vec<Range<Anchor>>,
-        cx: &mut Context<Self>,
-    ) {
-        let snapshot = self.snapshot(cx);
-        let ranges = Self::hunk_query_ranges(&snapshot, &ranges);
-        self.toggle_base_text_in_ranges(&snapshot, ranges, cx);
-    }
-
-    /// Like [`Self::toggle_base_text_for_hunks`], but only for the hunks within
-    /// the given range, without including a hunk that starts on the next row.
-    pub fn toggle_base_text_for_single_hunk(
-        &mut self,
-        range: Range<Anchor>,
-        cx: &mut Context<Self>,
-    ) {
-        let snapshot = self.snapshot(cx);
-        let excerpt_end = snapshot
-            .excerpt_containing(range.end..range.end)
-            .and_then(|(_, excerpt_range)| snapshot.anchor_in_excerpt(excerpt_range.context.end));
-        let point_range = range.to_point(&snapshot);
-        self.toggle_base_text_in_ranges(&snapshot, vec![(point_range, excerpt_end)], cx);
-    }
-
-    fn toggle_base_text_in_ranges(
-        &mut self,
-        snapshot: &MultiBufferSnapshot,
-        ranges: Vec<(Range<Point>, Option<Anchor>)>,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(reveal) = ranges
-            .iter()
-            .filter_map(|(range, _)| snapshot.hunk_base_text_hidden(range.clone()))
-            .reduce(|any_hidden, hidden| any_hidden || hidden)
-        else {
-            return;
-        };
-        let edits =
-            self.update_diff_hunks_in_ranges(ranges, DiffChangeKind::ToggleBaseText { reveal }, cx);
-        if !edits.is_empty() {
-            self.subscriptions.publish(edits);
-        }
-        cx.emit(Event::DiffHunksToggled);
-        cx.emit(Event::Edited {
-            edited_buffer: None,
-            source: BufferEditSource::User,
-        });
-    }
-
-    fn hunk_query_ranges(
-        snapshot: &MultiBufferSnapshot,
-        ranges: &[Range<Anchor>],
-    ) -> Vec<(Range<Point>, Option<Anchor>)> {
-        ranges
-            .iter()
-            .map(|range| {
-                let excerpt_end = snapshot.excerpt_containing(range.end..range.end).and_then(
-                    |(_, excerpt_range)| snapshot.anchor_in_excerpt(excerpt_range.context.end),
-                );
-                let range = range.to_point(snapshot);
-                let mut peek_end = range.end;
-                if range.end.row < snapshot.max_row().0 {
-                    peek_end = Point::new(range.end.row + 1, 0);
-                };
-                (range.start..peek_end, excerpt_end)
-            })
-            .collect()
+        Self::sync_diff_transforms(
+            &mut snapshot,
+            excerpt_edits,
+            DiffChangeKind::ExpandOrCollapseHunks { expand },
+        )
     }
 
     pub fn expand_or_collapse_diff_hunks(
@@ -2579,7 +2490,18 @@ impl MultiBuffer {
         cx: &mut Context<Self>,
     ) {
         let snapshot = self.snapshot.borrow().clone();
-        let ranges = Self::hunk_query_ranges(&snapshot, &ranges);
+        let ranges =
+            ranges.iter().map(move |range| {
+                let excerpt_end = snapshot.excerpt_containing(range.end..range.end).and_then(
+                    |(_, excerpt_range)| snapshot.anchor_in_excerpt(excerpt_range.context.end),
+                );
+                let range = range.to_point(&snapshot);
+                let mut peek_end = range.end;
+                if range.end.row < snapshot.max_row().0 {
+                    peek_end = Point::new(range.end.row + 1, 0);
+                };
+                (range.start..peek_end, excerpt_end)
+            });
         let edits = self.expand_or_collapse_diff_hunks_inner(ranges, expand, cx);
         if !edits.is_empty() {
             self.subscriptions.publish(edits);
@@ -3014,7 +2936,6 @@ impl MultiBuffer {
                                 excerpt_end: excerpt.end_anchor(),
                                 is_logically_deleted: true,
                                 is_block_diff: hunk.is_block_diff,
-                                base_revealed: false,
                             };
                             *end_of_current_insert =
                                 Some((hunk_excerpt_end.min(excerpt_end), hunk_info));
@@ -3034,14 +2955,13 @@ impl MultiBuffer {
                             continue;
                         }
 
-                        let mut hunk_info = DiffTransformHunkInfo {
+                        let hunk_info = DiffTransformHunkInfo {
                             buffer_id: buffer_snapshot.remote_id(),
                             hunk_start_anchor: hunk.buffer_range.start,
                             hunk_secondary_status: hunk.secondary_status,
                             excerpt_end: excerpt.end_anchor(),
                             is_logically_deleted: false,
                             is_block_diff: hunk.is_block_diff,
-                            base_revealed: false,
                         };
 
                         let hunk_excerpt_start = excerpt_start
@@ -3058,33 +2978,20 @@ impl MultiBuffer {
 
                         // For every existing hunk, determine if it was previously expanded
                         // and if it should currently be expanded.
-                        let previous_hunk_info = old_expanded_hunks.get(&hunk_info);
-                        let was_previously_expanded = previous_hunk_info.is_some();
-                        let intersects_edit = hunk_buffer_range.is_empty()
-                            || (hunk_buffer_range.end > edit_buffer_start);
-                        hunk_info.base_revealed = match &change_kind {
-                            DiffChangeKind::ToggleBaseText { reveal } if intersects_edit => *reveal,
-                            _ => previous_hunk_info.is_some_and(|info| info.base_revealed),
-                        };
-                        let hide_base_text = hunk.base_retained
-                            && !hunk_info.base_revealed
-                            && !hunk_buffer_range.is_empty();
+                        let was_previously_expanded = old_expanded_hunks.contains(&hunk_info);
                         let should_expand_hunk = match &change_kind {
                             DiffChangeKind::DiffUpdated { base_changed: true } => {
                                 was_previously_expanded || all_diff_hunks_expanded
                             }
                             DiffChangeKind::ExpandOrCollapseHunks { expand } => {
+                                let intersects = hunk_buffer_range.is_empty()
+                                    || (hunk_buffer_range.end > edit_buffer_start);
                                 if *expand {
-                                    intersects_edit
-                                        || was_previously_expanded
-                                        || all_diff_hunks_expanded
+                                    intersects || was_previously_expanded || all_diff_hunks_expanded
                                 } else {
-                                    !intersects_edit
+                                    !intersects
                                         && (was_previously_expanded || all_diff_hunks_expanded)
                                 }
-                            }
-                            DiffChangeKind::ToggleBaseText { .. } => {
-                                was_previously_expanded || all_diff_hunks_expanded
                             }
                             _ => was_previously_expanded || all_diff_hunks_expanded,
                         };
@@ -3100,7 +3007,9 @@ impl MultiBuffer {
                                 && hunk_buffer_range.start >= edit_buffer_start
                                 && hunk_buffer_range.start <= excerpt_buffer_end
                                 && snapshot.show_deleted_hunks
-                                && !hide_base_text
+                                // Hunks with block word diffs only show their buffer
+                                // text, with the changes highlighted within it.
+                                && !hunk.is_block_diff
                             {
                                 let base_text = diff.base_text();
                                 let mut text_cursor =
@@ -3572,29 +3481,6 @@ impl MultiBufferSnapshot {
         self.diff_hunks_in_range(Anchor::Min..Anchor::Max)
     }
 
-    /// Returns whether any of the expanded hunks in the given range hides deleted
-    /// text that survives unchanged in its buffer text, apart from insertions and
-    /// added indentation,
-    /// or `None` if the range contains no such hunks.
-    pub fn hunk_base_text_hidden<T: ToPoint>(&self, range: Range<T>) -> Option<bool> {
-        if !self.show_deleted_hunks {
-            return None;
-        }
-        let mut cursor = self.diff_transforms.cursor::<MultiBufferOffset>(());
-        let mut any_hidden = None;
-        for hunk in self.diff_hunks_in_range(range) {
-            if !hunk.base_retained || hunk.status().kind != DiffHunkStatusKind::Modified {
-                continue;
-            }
-            cursor.seek(&hunk.multi_buffer_range.start.to_offset(self), Bias::Right);
-            let Some(hunk_info) = cursor.item().and_then(|transform| transform.hunk_info()) else {
-                continue;
-            };
-            any_hidden = Some(any_hidden.unwrap_or(false) || !hunk_info.base_revealed);
-        }
-        any_hidden
-    }
-
     pub fn diff_hunks_in_range<T: ToPoint>(
         &self,
         range: Range<T>,
@@ -3646,7 +3532,9 @@ impl MultiBufferSnapshot {
             .then(|| {
                 let mut word_diffs = Vec::new();
 
-                if self.show_deleted_hunks || is_inverted {
+                let shows_base_text =
+                    is_inverted || (self.show_deleted_hunks && !hunk.is_block_diff);
+                if shows_base_text {
                     let hunk_start_offset = if is_inverted {
                         Anchor::in_buffer(
                             excerpt.path_key_index,
@@ -3699,7 +3587,6 @@ impl MultiBufferSnapshot {
                 buffer_range,
                 word_diffs,
                 is_block_diff: hunk.is_block_diff,
-                base_retained: hunk.base_retained && !is_inverted,
                 diff_base_byte_range: BufferOffset(hunk.diff_base_byte_range.start)
                     ..BufferOffset(hunk.diff_base_byte_range.end),
                 status: DiffHunkStatus {

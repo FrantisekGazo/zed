@@ -1875,8 +1875,8 @@
     // This setting can take two values:
     //
     // 1. Compare whole hunks word by word, matching re-indented lines with their
-    //    original lines. Hunks whose old lines only gained code or indentation
-    //    are shown without their deleted text:
+    //    original lines. Unified diffs show only the new text of such hunks,
+    //    with the changes highlighted within it:
     //    "word_diff_style": "block"
     // 2. Only highlight changed words within small hunks that replace the same
     //    number of lines:

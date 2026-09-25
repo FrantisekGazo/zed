@@ -173,9 +173,6 @@ pub struct DiffHunk {
     pub base_word_diffs: Vec<(Range<usize>, WordDiffKind)>,
     /// Whether the word diffs were computed across the whole hunk.
     pub is_block_diff: bool,
-    /// Whether the deleted text survives unchanged in the buffer text, apart from
-    /// insertions and added indentation.
-    pub base_retained: bool,
 }
 
 /// We store [`InternalDiffHunk`]s internally so we don't need to store the additional row range.
@@ -187,7 +184,6 @@ struct InternalDiffHunk {
     base_word_diffs: Vec<(Range<usize>, WordDiffKind)>,
     buffer_word_diffs: Vec<(Range<Anchor>, WordDiffKind)>,
     is_block_diff: bool,
-    base_retained: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -414,7 +410,6 @@ impl BufferDiffSnapshot {
                     base_word_diffs: hunk.base_word_diffs.clone(),
                     buffer_word_diffs: hunk.buffer_word_diffs.clone(),
                     is_block_diff: hunk.is_block_diff,
-                    base_retained: hunk.base_retained,
                 }
             })
     }
@@ -1099,7 +1094,6 @@ impl BufferDiffSnapshot {
                 let base_word_diffs = hunk.base_word_diffs.clone();
                 let buffer_word_diffs = hunk.buffer_word_diffs.clone();
                 let is_block_diff = hunk.is_block_diff;
-                let base_retained = hunk.base_retained;
 
                 if !start_anchor.is_valid(buffer) {
                     continue;
@@ -1181,7 +1175,6 @@ impl BufferDiffSnapshot {
                     base_word_diffs,
                     buffer_word_diffs,
                     is_block_diff,
-                    base_retained,
                     secondary_status,
                 });
             }
@@ -1210,7 +1203,6 @@ impl BufferDiffSnapshot {
                 base_word_diffs: hunk.base_word_diffs.clone(),
                 buffer_word_diffs: hunk.buffer_word_diffs.clone(),
                 is_block_diff: hunk.is_block_diff,
-                base_retained: hunk.base_retained,
             })
         })
     }
@@ -1265,7 +1257,6 @@ fn compute_hunks(
                     base_word_diffs: Vec::default(),
                     buffer_word_diffs: Vec::default(),
                     is_block_diff: false,
-                    base_retained: false,
                 },
                 buffer,
             );
@@ -1297,7 +1288,6 @@ fn compute_hunks(
                 base_word_diffs: Vec::default(),
                 buffer_word_diffs: Vec::default(),
                 is_block_diff: false,
-                base_retained: false,
             },
             buffer,
         );
@@ -1360,7 +1350,6 @@ impl HunkSink<'_> {
         let buffer_line_count = new_end - new_start;
 
         let mut is_block_diff = false;
-        let mut base_retained = false;
         let mut base_word_diffs = Vec::new();
         let mut buffer_word_diffs = Vec::new();
         if let Some(diff_options) = self.diff_options
@@ -1393,7 +1382,6 @@ impl HunkSink<'_> {
                 let buffer_word_diffs_relative;
                 if let Some(block_diff) = block_diff {
                     is_block_diff = true;
-                    base_retained = block_diff.old_side_retained();
                     base_word_diffs = block_diff.old;
                     buffer_word_diffs_relative = block_diff.new;
                 } else if try_line_diff {
@@ -1441,7 +1429,6 @@ impl HunkSink<'_> {
             base_word_diffs,
             buffer_word_diffs,
             is_block_diff,
-            base_retained,
         });
     }
 
@@ -2614,7 +2601,6 @@ mod tests {
         let hunks = all_hunks(&diff, &buffer);
         assert_eq!(hunks.len(), 1);
         assert!(hunks[0].is_block_diff);
-        assert!(hunks[0].base_retained);
         assert_eq!(
             render_word_diffs(&hunks[0], WRAPPED_BASE, &buffer),
             (
@@ -2639,7 +2625,6 @@ mod tests {
         let diff = BufferDiffSnapshot::new_sync(&buffer, diff_base.to_string(), cx);
         let hunks = all_hunks(&diff, &buffer);
         assert!(hunks[0].is_block_diff);
-        assert!(!hunks[0].base_retained);
         assert_eq!(
             render_word_diffs(&hunks[0], diff_base, &buffer),
             (
@@ -2661,7 +2646,6 @@ mod tests {
         let hunks = all_hunks(&diff, &buffer);
         assert_eq!(hunks.len(), 1);
         assert!(!hunks[0].is_block_diff);
-        assert!(!hunks[0].base_retained);
     }
 
     #[gpui::test]
@@ -2675,7 +2659,6 @@ mod tests {
         let diff = BufferDiffSnapshot::new_sync(&buffer, WRAPPED_BASE.to_string(), cx);
         let hunks = all_hunks(&diff, &buffer);
         assert!(!hunks[0].is_block_diff);
-        assert!(!hunks[0].base_retained);
         assert_eq!(
             render_word_diffs(&hunks[0], WRAPPED_BASE, &buffer),
             (vec![], vec![])
