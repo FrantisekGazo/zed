@@ -831,6 +831,12 @@ pub struct WordDiffSettings {
     pub style: WordDiffStyle,
 }
 
+impl WordDiffSettings {
+    pub fn global_style(cx: &App) -> WordDiffStyle {
+        Self::get_global(cx).style
+    }
+}
+
 impl settings::Settings for WordDiffSettings {
     fn from_settings(content: &settings::SettingsContent) -> Self {
         Self {
