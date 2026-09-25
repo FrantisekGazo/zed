@@ -246,15 +246,6 @@ pub enum WordDiffKind {
 pub struct BlockWordDiff {
     pub old: Vec<(Range<usize>, WordDiffKind)>,
     pub new: Vec<(Range<usize>, WordDiffKind)>,
-    whitespace_changed_within_lines: bool,
-}
-
-impl BlockWordDiff {
-    /// Whether the old text survives unchanged in the new text, apart from
-    /// insertions and added indentation, so that it can be hidden.
-    pub fn old_side_retained(&self) -> bool {
-        self.old.is_empty() && !self.whitespace_changed_within_lines
-    }
 }
 
 /// Computes a word diff across a whole block of lines, classifying each changed
@@ -418,13 +409,11 @@ impl BlockDiffer<'_> {
                 .new
                 .token_range_for_lines(new_line as u32..new_line as u32 + 1);
             if old_tokens.is_empty() {
-                if self.push_whitespace_diff(
+                self.push_whitespace_diff(
                     self.old.lines[old_line].clone(),
                     self.new.lines[new_line].clone(),
                     Alignment::Start,
-                ) {
-                    self.result.whitespace_changed_within_lines = true;
-                }
+                );
             } else {
                 push_matched_tokens(old_tokens, new_tokens.start, matched_tokens);
             }
@@ -526,26 +515,19 @@ impl BlockDiffer<'_> {
         let new_breaks = self.new.gap_line_break(new_token_ix);
         match (old_breaks, new_breaks) {
             (Some(old_break), Some(new_break)) => {
-                if self.push_whitespace_diff(
+                self.push_whitespace_diff(
                     old_gap.start..old_break.start,
                     new_gap.start..new_break.start,
                     Alignment::Start,
-                ) {
-                    self.result.whitespace_changed_within_lines = true;
-                }
+                );
                 self.push_whitespace_diff(
                     old_break.end..old_gap.end,
                     new_break.end..new_gap.end,
                     Alignment::End,
                 );
             }
-            (None, None) => {
-                if self.push_whitespace_diff(old_gap, new_gap, Alignment::Start) {
-                    self.result.whitespace_changed_within_lines = true;
-                }
-            }
+            (None, None) => self.push_whitespace_diff(old_gap, new_gap, Alignment::Start),
             _ => {
-                self.result.whitespace_changed_within_lines = true;
                 let kind = if old_gap.is_empty() {
                     WordDiffKind::Inserted
                 } else if new_gap.is_empty() {
@@ -564,14 +546,13 @@ impl BlockDiffer<'_> {
     }
 
     /// Pushes the difference between two runs of whitespace, ignoring their
-    /// common prefix or suffix depending on the alignment, and returns whether
-    /// they differ.
+    /// common prefix or suffix depending on the alignment.
     fn push_whitespace_diff(
         &mut self,
         old_range: Range<usize>,
         new_range: Range<usize>,
         alignment: Alignment,
-    ) -> bool {
+    ) {
         let old_whitespace = &self.old.text[old_range.clone()];
         let new_whitespace = &self.new.text[new_range.clone()];
         let common_len = match alignment {
@@ -602,7 +583,7 @@ impl BlockDiffer<'_> {
             ),
         };
         match (old_changed.is_empty(), new_changed.is_empty()) {
-            (true, true) => return false,
+            (true, true) => {}
             (true, false) => self.push(Side::New, new_changed, WordDiffKind::Inserted),
             (false, true) => self.push(Side::Old, old_changed, WordDiffKind::Deleted),
             (false, false) => {
@@ -610,7 +591,6 @@ impl BlockDiffer<'_> {
                 self.push(Side::New, new_changed, WordDiffKind::Modified);
             }
         }
-        true
     }
 }
 
@@ -1100,7 +1080,7 @@ mod tests {
     }
 
     #[test]
-    fn test_block_word_diff_widget_wrap_keeps_old_side() {
+    fn test_block_word_diff_widget_wrap() {
         let old_text = indoc::indoc! {"
             return Foo(
               a: 1,
@@ -1115,7 +1095,6 @@ mod tests {
             );
         "};
         let diff = block_word_diff(old_text, new_text, None).unwrap();
-        assert!(diff.old_side_retained());
         assert_eq!(diff.old, vec![]);
         assert_eq!(
             render_positions(new_text, &diff.new),
@@ -1158,7 +1137,6 @@ mod tests {
               ),
         "};
         let diff = block_word_diff(old_text, new_text, None).unwrap();
-        assert!(!diff.old_side_retained());
         assert_eq!(
             render_positions(old_text, &diff.old),
             vec![
@@ -1192,9 +1170,9 @@ mod tests {
     }
 
     #[test]
-    fn test_block_word_diff_nested_call_keeps_old_side() {
+    fn test_block_word_diff_nested_call() {
         let diff = block_word_diff("Foo()\n", "Padding(child: Foo())\n", None).unwrap();
-        assert!(diff.old_side_retained());
+        assert_eq!(diff.old, vec![]);
         assert!(!diff.new.is_empty());
     }
 
@@ -1203,7 +1181,6 @@ mod tests {
         let old_text = "foo(\n  a,\n)\n";
         let new_text = "  foo(\n    a,\n  )\n";
         let diff = block_word_diff(old_text, new_text, None).unwrap();
-        assert!(diff.old_side_retained());
         assert_eq!(
             render_positions(new_text, &diff.new),
             vec!["0:0 \"  \"", "1:0 \"  \"", "2:0 \"  \""]
@@ -1215,7 +1192,6 @@ mod tests {
         );
 
         let diff = block_word_diff(new_text, old_text, None).unwrap();
-        assert!(!diff.old_side_retained());
         assert_eq!(
             render_positions(new_text, &diff.old),
             vec!["0:0 \"  \"", "1:0 \"  \"", "2:0 \"  \""]
@@ -1237,8 +1213,6 @@ mod tests {
 
     #[test]
     fn test_block_word_diff_highlights_whitespace_within_lines() {
-        let diff = block_word_diff("var total=1+2;\n", "var total = 1 + 2;\n", None).unwrap();
-        assert!(!diff.old_side_retained());
         assert_eq!(
             render_block_word_diff("var total=1+2;\n", "var total = 1 + 2;\n"),
             Some((
@@ -1267,7 +1241,6 @@ mod tests {
     #[test]
     fn test_block_word_diff_highlights_trailing_whitespace() {
         let diff = block_word_diff("a\nb\n", "a  \nb\n", None).unwrap();
-        assert!(!diff.old_side_retained());
         assert_eq!(render_positions("a  \nb\n", &diff.new), vec!["0:1 \"  \""]);
         assert_eq!(
             render_block_word_diff("a b  \n", "a b\n"),
@@ -1278,15 +1251,12 @@ mod tests {
     #[test]
     fn test_block_word_diff_highlights_blank_lines() {
         let diff = block_word_diff("a\nb\n", "a\n\nb\n", None).unwrap();
-        assert!(diff.old_side_retained());
         assert_eq!(render_positions("a\n\nb\n", &diff.new), vec!["1:0 \"\\n\""]);
 
         let diff = block_word_diff("a\n\nb\n", "a\nb\n", None).unwrap();
-        assert!(!diff.old_side_retained());
         assert_eq!(render_positions("a\n\nb\n", &diff.old), vec!["1:0 \"\\n\""]);
 
         let diff = block_word_diff("a\n\nb\n", "a\n  \nb\n", None).unwrap();
-        assert!(!diff.old_side_retained());
         assert_eq!(
             render_positions("a\n  \nb\n", &diff.new),
             vec!["1:0 \"  \""]
@@ -1296,7 +1266,6 @@ mod tests {
     #[test]
     fn test_block_word_diff_highlights_line_breaks() {
         let diff = block_word_diff("foo(1)\n", "foo(\n  1,\n)\n", None).unwrap();
-        assert!(!diff.old_side_retained());
         assert_eq!(
             render_positions("foo(\n  1,\n)\n", &diff.new),
             vec!["1:0 \"  \"", "1:3 \",\"", "1:4 \"\\n\""]
@@ -1331,8 +1300,6 @@ mod tests {
 
     #[test]
     fn test_block_word_diff_deleted_line() {
-        let diff = block_word_diff("a(\n  b,\n  c,\n)\n", "a(\n  b,\n)\n", None).unwrap();
-        assert!(!diff.old_side_retained());
         assert_eq!(
             render_block_word_diff("a(\n  b,\n  c,\n)\n", "a(\n  b,\n)\n"),
             Some((

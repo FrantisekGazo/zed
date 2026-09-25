@@ -108,13 +108,19 @@ struct LineHighlightSpec {
 enum LineNumberStyle {
     Breakpoint,
     DiffAdded,
+    DiffModified,
     DiffDeleted,
     Active,
     Inactive,
 }
 
 impl LineNumberStyle {
-    fn new(is_active: bool, is_breakpoint: bool, diff_status: Option<DiffHunkStatus>) -> Self {
+    fn new(
+        is_active: bool,
+        is_breakpoint: bool,
+        diff_status: Option<DiffHunkStatus>,
+        is_block_diff: bool,
+    ) -> Self {
         match (
             is_active,
             is_breakpoint,
@@ -122,6 +128,7 @@ impl LineNumberStyle {
         ) {
             (_, true, _) => Self::Breakpoint,
             (true, _, _) => Self::Active,
+            (_, _, Some(_)) if is_block_diff => Self::DiffModified,
             (_, _, Some(DiffHunkStatusKind::Added)) => Self::DiffAdded,
             (_, _, Some(DiffHunkStatusKind::Deleted)) => Self::DiffDeleted,
             (_, _, _) => Self::Inactive,
@@ -132,6 +139,7 @@ impl LineNumberStyle {
         match self {
             Self::Breakpoint => colors.debugger_accent,
             Self::DiffAdded => colors.version_control_added,
+            Self::DiffModified => colors.version_control_modified,
             Self::DiffDeleted => colors.version_control_deleted,
             Self::Active => colors.editor_active_line_number,
             Self::Inactive => colors.editor_line_number,
@@ -650,7 +658,6 @@ impl EditorElement {
             }
         }
         register_action(editor, window, Editor::toggle_selected_diff_hunks);
-        register_action(editor, window, Editor::toggle_diff_hunk_original);
         register_action(editor, window, Editor::toggle_staged_selected_diff_hunks);
         register_action(editor, window, Editor::stage_and_next);
         register_action(editor, window, Editor::unstage_and_next);
@@ -2917,6 +2924,7 @@ impl EditorElement {
                     spec.is_some(),
                     spec.is_some_and(|spec| spec.breakpoint),
                     row_info.diff_status,
+                    row_info.is_block_diff,
                 )
                 .color(cx.theme().colors());
 
@@ -5418,23 +5426,15 @@ impl EditorElement {
                     DisplayDiffHunk::Unfolded {
                         status,
                         display_row_range,
+                        is_block_diff,
                         ..
                     } => hitbox.as_ref().map(|hunk_hitbox| {
-                        let color = match split_side {
-                            Some(SplitSide::Left) => cx.theme().colors().version_control_deleted,
-                            Some(SplitSide::Right) => cx.theme().colors().version_control_added,
-                            None => match status.kind {
-                                DiffHunkStatusKind::Added => {
-                                    cx.theme().colors().version_control_added
-                                }
-                                DiffHunkStatusKind::Modified => {
-                                    cx.theme().colors().version_control_modified
-                                }
-                                DiffHunkStatusKind::Deleted => {
-                                    cx.theme().colors().version_control_deleted
-                                }
-                            },
-                        };
+                        let color = diff_hunk_gutter_color(
+                            split_side,
+                            status.kind,
+                            *is_block_diff,
+                            cx.theme().colors(),
+                        );
                         match status.kind {
                             DiffHunkStatusKind::Deleted if display_row_range.is_empty() => (
                                 Bounds::new(
@@ -11448,6 +11448,26 @@ fn diff_hunk_row_colors(
     }
 }
 
+fn diff_hunk_gutter_color(
+    split_side: Option<SplitSide>,
+    kind: DiffHunkStatusKind,
+    is_block_diff: bool,
+    colors: &theme::ThemeColors,
+) -> Hsla {
+    if is_block_diff {
+        return colors.version_control_modified;
+    }
+    match (split_side, kind) {
+        (Some(SplitSide::Left), _) | (None, DiffHunkStatusKind::Deleted) => {
+            colors.version_control_deleted
+        }
+        (Some(SplitSide::Right), _) | (None, DiffHunkStatusKind::Added) => {
+            colors.version_control_added
+        }
+        (None, DiffHunkStatusKind::Modified) => colors.version_control_modified,
+    }
+}
+
 fn word_diff_background(kind: WordDiffKind, colors: &theme::ThemeColors) -> Hsla {
     match kind {
         WordDiffKind::Modified => colors.version_control_word_modified,
@@ -11672,6 +11692,51 @@ mod tests {
         assert_eq!(
             thumb_fills_track.thumb_pixels_per_editor_line(&thumb_fills_track.thumb_layout(0.)),
             None
+
+    #[test]
+    fn test_gutter_and_line_number_colors_for_block_diffs() {
+        let colors = theme::ThemeColors::dark();
+        for split_side in [None, Some(SplitSide::Left), Some(SplitSide::Right)] {
+            assert_eq!(
+                diff_hunk_gutter_color(split_side, DiffHunkStatusKind::Modified, true, &colors),
+                colors.version_control_modified
+            );
+        }
+        assert_eq!(
+            diff_hunk_gutter_color(
+                Some(SplitSide::Left),
+                DiffHunkStatusKind::Modified,
+                false,
+                &colors
+            ),
+            colors.version_control_deleted
+        );
+        assert_eq!(
+            diff_hunk_gutter_color(
+                Some(SplitSide::Right),
+                DiffHunkStatusKind::Modified,
+                false,
+                &colors
+            ),
+            colors.version_control_added
+        );
+        assert_eq!(
+            diff_hunk_gutter_color(None, DiffHunkStatusKind::Added, false, &colors),
+            colors.version_control_added
+        );
+
+        for status in [DiffHunkStatus::added_none(), DiffHunkStatus::deleted_none()] {
+            assert_eq!(
+                LineNumberStyle::new(false, false, Some(status), true).color(&colors),
+                colors.version_control_modified
+            );
+        }
+        assert_eq!(
+            LineNumberStyle::new(false, false, Some(DiffHunkStatus::added_none()), false)
+                .color(&colors),
+            colors.version_control_added
+        );
+    }
 
     #[test]
     fn test_diff_hunk_colors_for_block_diffs() {
