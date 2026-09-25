@@ -3542,13 +3542,13 @@ impl MultiBufferSnapshot {
                         };
 
                         if hunk_has_deleted_text || is_inverted {
-                            word_diffs.extend(hunk.base_word_diffs.iter().map(|diff| {
+                            word_diffs.extend(hunk.base_word_diffs.iter().map(|(diff, _)| {
                                 hunk_start_offset + diff.start..hunk_start_offset + diff.end
                             }));
                         }
 
                         if !is_inverted {
-                            word_diffs.extend(hunk.buffer_word_diffs.into_iter().map(|diff| {
+                            word_diffs.extend(hunk.buffer_word_diffs.into_iter().map(|(diff, _)| {
                                 Anchor::range_in_buffer(excerpt.path_key_index, diff)
                                     .to_offset(self)
                             }));

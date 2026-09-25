@@ -1,8 +1,9 @@
 use gpui::{App, AppContext as _, Context, Entity, EventEmitter, Task};
 use imara_diff::{Algorithm, Diff, InternedInput, sources::lines};
 use language::{
-    Capability, DiffOptions, Language, LanguageName, LanguageRegistry,
-    language_settings::LanguageSettings, word_diff_ranges,
+    Capability, DiffOptions, Language, LanguageName, LanguageRegistry, WordDiffKind,
+    WordDiffSettings, WordDiffStyle, block_word_diff, language_settings::LanguageSettings,
+    word_diff_ranges,
 };
 use rope::Rope;
 use std::{
@@ -92,6 +93,9 @@ pub struct BufferDiffSnapshot {
     base_text_exists: bool,
     buffer_snapshot: text::BufferSnapshot,
     secondary_diff: Option<Arc<BufferDiffSnapshot>>,
+    /// The word diff style the hunks were computed with, or `None` if word diffs
+    /// were disabled.
+    word_diff_style: Option<WordDiffStyle>,
 }
 
 impl std::fmt::Debug for BufferDiffSnapshot {
@@ -110,6 +114,7 @@ pub struct BufferDiffUpdate {
     base_text: language::BufferSnapshot,
     base_text_exists: bool,
     buffer_snapshot: text::BufferSnapshot,
+    word_diff_style: Option<WordDiffStyle>,
 }
 
 impl BufferDiffUpdate {
@@ -163,9 +168,15 @@ pub struct DiffHunk {
     pub diff_base_byte_range: Range<usize>,
     pub secondary_status: DiffHunkSecondaryStatus,
     // Anchors representing the word diff locations in the active buffer
-    pub buffer_word_diffs: Vec<Range<Anchor>>,
+    pub buffer_word_diffs: Vec<(Range<Anchor>, WordDiffKind)>,
     // Offsets relative to the start of the deleted diff that represent word diff locations
-    pub base_word_diffs: Vec<Range<usize>>,
+    pub base_word_diffs: Vec<(Range<usize>, WordDiffKind)>,
+    /// Whether the word diffs were computed across the whole hunk, ignoring whitespace.
+    pub is_block_diff: bool,
+    /// Whether every word of the deleted text is still present in the buffer, so
+    /// that the deleted text only differs from the buffer text in whitespace and
+    /// insertions.
+    pub base_retained: bool,
 }
 
 /// We store [`InternalDiffHunk`]s internally so we don't need to store the additional row range.
@@ -174,8 +185,10 @@ struct InternalDiffHunk {
     buffer_range: Range<Anchor>,
     diff_base_byte_range: Range<usize>,
     diff_base_point_range: Range<Point>,
-    base_word_diffs: Vec<Range<usize>>,
-    buffer_word_diffs: Vec<Range<Anchor>>,
+    base_word_diffs: Vec<(Range<usize>, WordDiffKind)>,
+    buffer_word_diffs: Vec<(Range<Anchor>, WordDiffKind)>,
+    is_block_diff: bool,
+    base_retained: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -401,6 +414,8 @@ impl BufferDiffSnapshot {
                     secondary_status: DiffHunkSecondaryStatus::NoSecondaryHunk,
                     base_word_diffs: hunk.base_word_diffs.clone(),
                     buffer_word_diffs: hunk.buffer_word_diffs.clone(),
+                    is_block_diff: hunk.is_block_diff,
+                    base_retained: hunk.base_retained,
                 }
             })
     }
@@ -1084,6 +1099,8 @@ impl BufferDiffSnapshot {
 
                 let base_word_diffs = hunk.base_word_diffs.clone();
                 let buffer_word_diffs = hunk.buffer_word_diffs.clone();
+                let is_block_diff = hunk.is_block_diff;
+                let base_retained = hunk.base_retained;
 
                 if !start_anchor.is_valid(buffer) {
                     continue;
@@ -1164,6 +1181,8 @@ impl BufferDiffSnapshot {
                     buffer_range: start_anchor..end_anchor,
                     base_word_diffs,
                     buffer_word_diffs,
+                    is_block_diff,
+                    base_retained,
                     secondary_status,
                 });
             }
@@ -1191,6 +1210,8 @@ impl BufferDiffSnapshot {
                 secondary_status: DiffHunkSecondaryStatus::NoSecondaryHunk,
                 base_word_diffs: hunk.base_word_diffs.clone(),
                 buffer_word_diffs: hunk.buffer_word_diffs.clone(),
+                is_block_diff: hunk.is_block_diff,
+                base_retained: hunk.base_retained,
             })
         })
     }
@@ -1214,9 +1235,10 @@ fn build_diff_options(
 
     LanguageSettings::resolve(None, language.as_ref(), cx)
         .word_diff_enabled
-        .then_some(DiffOptions {
+        .then(|| DiffOptions {
             language_scope,
             max_word_diff_line_count: MAX_WORD_DIFF_LINE_COUNT,
+            word_diff_style: WordDiffSettings::global_style(cx),
             ..Default::default()
         })
 }
@@ -1243,6 +1265,8 @@ fn compute_hunks(
                         ..diff_base_rope.offset_to_point(diff_base.len() - 1),
                     base_word_diffs: Vec::default(),
                     buffer_word_diffs: Vec::default(),
+                    is_block_diff: false,
+                    base_retained: false,
                 },
                 buffer,
             );
@@ -1273,6 +1297,8 @@ fn compute_hunks(
                 diff_base_point_range: Point::new(0, 0)..Point::new(0, 0),
                 base_word_diffs: Vec::default(),
                 buffer_word_diffs: Vec::default(),
+                is_block_diff: false,
+                base_retained: false,
             },
             buffer,
         );
@@ -1334,40 +1360,75 @@ impl HunkSink<'_> {
         let base_line_count = old_end - old_start;
         let buffer_line_count = new_end - new_start;
 
-        let (base_word_diffs, buffer_word_diffs) = if let Some(diff_options) = self.diff_options
-            && !buffer_row_range.is_empty()
-            && base_line_count == buffer_line_count
-            && diff_options.max_word_diff_line_count >= base_line_count
+        let mut is_block_diff = false;
+        let mut base_retained = false;
+        let mut base_word_diffs = Vec::new();
+        let mut buffer_word_diffs = Vec::new();
+        if let Some(diff_options) = self.diff_options
+            && base_line_count > 0
+            && buffer_line_count > 0
         {
-            let base_text: String = self
-                .diff_base_rope
-                .chunks_in_range(diff_base_byte_range.clone())
-                .collect();
-            let buffer_text: String = self.buffer.text_for_range(buffer_range.clone()).collect();
+            let buffer_offset_range = buffer_range.to_offset(self.buffer);
+            let try_block_diff = diff_options.word_diff_style == WordDiffStyle::Block
+                && diff_base_byte_range.len() <= language::MAX_BLOCK_WORD_DIFF_LEN
+                && buffer_offset_range.len() <= language::MAX_BLOCK_WORD_DIFF_LEN;
+            let try_line_diff = base_line_count == buffer_line_count
+                && diff_options.max_word_diff_line_count >= base_line_count;
+            if try_block_diff || try_line_diff {
+                let base_text: String = self
+                    .diff_base_rope
+                    .chunks_in_range(diff_base_byte_range.clone())
+                    .collect();
+                let buffer_text: String =
+                    self.buffer.text_for_range(buffer_range.clone()).collect();
 
-            let (base_word_diffs, buffer_word_diffs_relative) = word_diff_ranges(
-                &base_text,
-                &buffer_text,
-                DiffOptions {
-                    language_scope: diff_options.language_scope.clone(),
-                    ..*diff_options
-                },
-            );
+                let block_diff = try_block_diff
+                    .then(|| {
+                        block_word_diff(
+                            &base_text,
+                            &buffer_text,
+                            diff_options.language_scope.clone(),
+                        )
+                    })
+                    .flatten();
+                let buffer_word_diffs_relative;
+                if let Some(block_diff) = block_diff {
+                    is_block_diff = true;
+                    base_retained = block_diff.old_side_retained();
+                    base_word_diffs = block_diff.old;
+                    buffer_word_diffs_relative = block_diff.new;
+                } else if try_line_diff {
+                    let (base_ranges, buffer_ranges) = word_diff_ranges(
+                        &base_text,
+                        &buffer_text,
+                        DiffOptions {
+                            language_scope: diff_options.language_scope.clone(),
+                            ..*diff_options
+                        },
+                    );
+                    base_word_diffs = base_ranges
+                        .into_iter()
+                        .map(|range| (range, WordDiffKind::Deleted))
+                        .collect();
+                    buffer_word_diffs_relative = buffer_ranges
+                        .into_iter()
+                        .map(|range| (range, WordDiffKind::Inserted))
+                        .collect();
+                } else {
+                    buffer_word_diffs_relative = Vec::new();
+                }
 
-            let buffer_start_offset = buffer_range.start.to_offset(self.buffer);
-            let buffer_word_diffs = buffer_word_diffs_relative
-                .into_iter()
-                .map(|range| {
-                    let start = self.buffer.anchor_after(buffer_start_offset + range.start);
-                    let end = self.buffer.anchor_after(buffer_start_offset + range.end);
-                    start..end
-                })
-                .collect();
-
-            (base_word_diffs, buffer_word_diffs)
-        } else {
-            (Vec::default(), Vec::default())
-        };
+                let buffer_start_offset = buffer_offset_range.start;
+                buffer_word_diffs = buffer_word_diffs_relative
+                    .into_iter()
+                    .map(|(range, kind)| {
+                        let start = self.buffer.anchor_after(buffer_start_offset + range.start);
+                        let end = self.buffer.anchor_after(buffer_start_offset + range.end);
+                        (start..end, kind)
+                    })
+                    .collect();
+            }
+        }
 
         self.hunks.push(InternalDiffHunk {
             buffer_range,
@@ -1380,6 +1441,8 @@ impl HunkSink<'_> {
                     .offset_to_point(diff_base_byte_range.end),
             base_word_diffs,
             buffer_word_diffs,
+            is_block_diff,
+            base_retained,
         });
     }
 
@@ -1682,6 +1745,7 @@ impl BufferDiff {
             base_text_exists: true,
             buffer_snapshot: buffer.clone(),
             secondary_diff: None,
+            word_diff_style: None,
         };
 
         BufferDiff {
@@ -2001,8 +2065,12 @@ impl BufferDiff {
         let buffer_snapshot = buffer.clone();
         let base_text_snapshot = base_text_snapshot.clone();
         let base_text_exists = base_text.is_some();
+        let word_diff_style = diff_options
+            .as_ref()
+            .map(|diff_options| diff_options.word_diff_style);
         let unchanged_hunks = self.diff_snapshot.as_ref().and_then(|diff_snapshot| {
             if diff_snapshot.base_text_exists == base_text_exists
+                && diff_snapshot.word_diff_style == word_diff_style
                 && diff_snapshot.base_text.version() == base_text_snapshot.version()
                 && diff_snapshot.buffer_snapshot.version() == buffer_snapshot.version()
             {
@@ -2030,6 +2098,7 @@ impl BufferDiff {
                 base_text: base_text_snapshot,
                 base_text_exists,
                 buffer_snapshot,
+                word_diff_style,
             }
         })
     }
@@ -2048,6 +2117,7 @@ impl BufferDiff {
             base_text: new_base_text,
             base_text_exists: new_base_text_exists,
             buffer_snapshot: new_buffer_snapshot,
+            word_diff_style: new_word_diff_style,
         } = update;
         let buffer = &new_buffer_snapshot;
         let old_snapshot = self
@@ -2060,6 +2130,7 @@ impl BufferDiff {
                 base_text_exists: false,
                 buffer_snapshot: new_buffer_snapshot.clone(),
                 secondary_diff: None,
+                word_diff_style: None,
             });
         let mut new_snapshot = BufferDiffSnapshot {
             hunks: new_hunks.clone(),
@@ -2068,6 +2139,7 @@ impl BufferDiff {
             buffer_snapshot: new_buffer_snapshot.clone(),
             pending_hunks: old_snapshot.pending_hunks.clone(),
             secondary_diff: None,
+            word_diff_style: new_word_diff_style,
         };
 
         let old_base_text_exists = old_snapshot.base_text_exists;
@@ -2216,6 +2288,7 @@ impl BufferDiff {
                 base_text_exists: false,
                 buffer_snapshot: self.buffer_snapshot.clone(),
                 secondary_diff: None,
+                word_diff_style: None,
             }
         });
         snapshot.secondary_diff = self.secondary_diff.as_ref().map(|diff| {
@@ -2472,7 +2545,7 @@ mod tests {
     use std::{fmt::Write as _, sync::mpsc};
 
     use super::*;
-    use gpui::TestAppContext;
+    use gpui::{BorrowAppContext as _, TestAppContext};
     use pretty_assertions::{assert_eq, assert_ne};
     use rand::{Rng as _, rngs::StdRng};
     use text::{Buffer, BufferId, ReplicaId, Rope};
@@ -2482,6 +2555,164 @@ mod tests {
     #[ctor::ctor(unsafe)]
     fn init_logger() {
         zlog::init_test();
+    }
+
+    fn set_word_diff_style(style: language::WordDiffStyle, cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            if !cx.has_global::<settings::SettingsStore>() {
+                let settings_store = settings::SettingsStore::test(cx);
+                cx.set_global(settings_store);
+            }
+            cx.update_global::<settings::SettingsStore, _>(|store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.git.get_or_insert_default().word_diff_style = Some(style);
+                });
+            });
+        });
+    }
+
+    fn render_word_diffs(
+        hunk: &DiffHunk,
+        diff_base: &str,
+        buffer: &text::BufferSnapshot,
+    ) -> (Vec<(String, WordDiffKind)>, Vec<(String, WordDiffKind)>) {
+        let base_start = hunk.diff_base_byte_range.start;
+        let base = hunk
+            .base_word_diffs
+            .iter()
+            .map(|(range, kind)| {
+                (
+                    diff_base[base_start + range.start..base_start + range.end].to_string(),
+                    *kind,
+                )
+            })
+            .collect();
+        let buffer = hunk
+            .buffer_word_diffs
+            .iter()
+            .map(|(range, kind)| (buffer.text_for_range(range.clone()).collect(), *kind))
+            .collect();
+        (base, buffer)
+    }
+
+    fn all_hunks(diff: &BufferDiffSnapshot, buffer: &text::BufferSnapshot) -> Vec<DiffHunk> {
+        diff.hunks_intersecting_range(Anchor::min_max_range_for_buffer(buffer.remote_id()), buffer)
+            .collect()
+    }
+
+    const WRAPPED_BASE: &str = "a\nreturn Foo(\n  x: 1,\n);\nb\n";
+    const WRAPPED_BUFFER: &str = "a\nreturn Padding(\n  child: Foo(\n    x: 1,\n  ),\n);\nb\n";
+
+    #[gpui::test]
+    async fn test_block_word_diff_for_wrapped_code(cx: &mut TestAppContext) {
+        set_word_diff_style(language::WordDiffStyle::Block, cx);
+        let buffer = Buffer::new(
+            ReplicaId::LOCAL,
+            BufferId::new(1).unwrap(),
+            WRAPPED_BUFFER.to_string(),
+        );
+        let diff = BufferDiffSnapshot::new_sync(&buffer, WRAPPED_BASE.to_string(), cx);
+        let hunks = all_hunks(&diff, &buffer);
+        assert_eq!(hunks.len(), 1);
+        assert!(hunks[0].is_block_diff);
+        assert!(hunks[0].base_retained);
+        assert_eq!(
+            render_word_diffs(&hunks[0], WRAPPED_BASE, &buffer),
+            (
+                vec![],
+                vec![
+                    ("Padding(".to_string(), WordDiffKind::Inserted),
+                    ("child:".to_string(), WordDiffKind::Inserted),
+                    ("),".to_string(), WordDiffKind::Inserted),
+                ]
+            )
+        );
+
+        let diff_base = "one two\n";
+        let buffer = Buffer::new(
+            ReplicaId::LOCAL,
+            BufferId::new(1).unwrap(),
+            "one TWO\n".to_string(),
+        );
+        let diff = BufferDiffSnapshot::new_sync(&buffer, diff_base.to_string(), cx);
+        let hunks = all_hunks(&diff, &buffer);
+        assert!(hunks[0].is_block_diff);
+        assert!(!hunks[0].base_retained);
+        assert_eq!(
+            render_word_diffs(&hunks[0], diff_base, &buffer),
+            (
+                vec![("two".to_string(), WordDiffKind::Modified)],
+                vec![("TWO".to_string(), WordDiffKind::Modified)]
+            )
+        );
+    }
+
+    #[gpui::test]
+    async fn test_block_word_diff_skips_pure_additions(cx: &mut TestAppContext) {
+        set_word_diff_style(language::WordDiffStyle::Block, cx);
+        let buffer = Buffer::new(
+            ReplicaId::LOCAL,
+            BufferId::new(1).unwrap(),
+            "a\nb\n".to_string(),
+        );
+        let diff = BufferDiffSnapshot::new_sync(&buffer, "a\n".to_string(), cx);
+        let hunks = all_hunks(&diff, &buffer);
+        assert_eq!(hunks.len(), 1);
+        assert!(!hunks[0].is_block_diff);
+        assert!(!hunks[0].base_retained);
+    }
+
+    #[gpui::test]
+    async fn test_lines_word_diff_style(cx: &mut TestAppContext) {
+        set_word_diff_style(language::WordDiffStyle::Lines, cx);
+        let buffer = Buffer::new(
+            ReplicaId::LOCAL,
+            BufferId::new(1).unwrap(),
+            WRAPPED_BUFFER.to_string(),
+        );
+        let diff = BufferDiffSnapshot::new_sync(&buffer, WRAPPED_BASE.to_string(), cx);
+        let hunks = all_hunks(&diff, &buffer);
+        assert!(!hunks[0].is_block_diff);
+        assert!(!hunks[0].base_retained);
+        assert_eq!(
+            render_word_diffs(&hunks[0], WRAPPED_BASE, &buffer),
+            (vec![], vec![])
+        );
+
+        let diff_base = "one two\n";
+        let buffer = Buffer::new(
+            ReplicaId::LOCAL,
+            BufferId::new(1).unwrap(),
+            "one TWO\n".to_string(),
+        );
+        let diff = BufferDiffSnapshot::new_sync(&buffer, diff_base.to_string(), cx);
+        let hunks = all_hunks(&diff, &buffer);
+        assert!(!hunks[0].is_block_diff);
+        assert_eq!(
+            render_word_diffs(&hunks[0], diff_base, &buffer),
+            (
+                vec![("two".to_string(), WordDiffKind::Deleted)],
+                vec![("TWO".to_string(), WordDiffKind::Inserted)]
+            )
+        );
+    }
+
+    #[gpui::test]
+    async fn test_word_diff_style_change_recomputes_hunks(cx: &mut TestAppContext) {
+        set_word_diff_style(language::WordDiffStyle::Lines, cx);
+        let buffer = Buffer::new(
+            ReplicaId::LOCAL,
+            BufferId::new(1).unwrap(),
+            WRAPPED_BUFFER.to_string(),
+        );
+        let diff = cx.new(|cx| BufferDiff::new_with_base_text(WRAPPED_BASE, &buffer, cx));
+        let snapshot = diff.update(cx, |diff, cx| diff.snapshot(cx));
+        assert!(!all_hunks(&snapshot, &buffer)[0].is_block_diff);
+
+        set_word_diff_style(language::WordDiffStyle::Block, cx);
+        diff.update(cx, |diff, cx| diff.recalculate_diff_sync(&buffer, cx));
+        let snapshot = diff.update(cx, |diff, cx| diff.snapshot(cx));
+        assert!(all_hunks(&snapshot, &buffer)[0].is_block_diff);
     }
 
     #[gpui::test]
