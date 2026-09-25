@@ -2621,7 +2621,9 @@ mod tests {
                 vec![],
                 vec![
                     ("Padding(".to_string(), WordDiffKind::Inserted),
-                    ("child:".to_string(), WordDiffKind::Inserted),
+                    ("  child:".to_string(), WordDiffKind::Inserted),
+                    (" ".to_string(), WordDiffKind::Inserted),
+                    ("  ".to_string(), WordDiffKind::Inserted),
                     ("  ".to_string(), WordDiffKind::Inserted),
                     ("),".to_string(), WordDiffKind::Inserted),
                 ]
