@@ -661,6 +661,10 @@ pub struct GitSettings {
     ///
     /// Default: staged_hollow
     pub hunk_style: Option<GitHunkStyleSetting>,
+    /// How changed words are found and highlighted within diff hunks.
+    ///
+    /// Default: block
+    pub word_diff_style: Option<WordDiffStyle>,
     /// Which base git features (gutter, file colors, git::Diff) diff against.
     ///
     /// Default: head
@@ -842,6 +846,31 @@ pub enum GitHunkStyleSetting {
     StagedHollow,
     /// Show unstaged hunks hollow and staged hunks with a filled background.
     UnstagedHollow,
+}
+
+#[derive(
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Debug,
+    Default,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    MergeFrom,
+    strum::VariantArray,
+    strum::VariantNames,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum WordDiffStyle {
+    /// Compare whole hunks word by word, ignoring whitespace, and show hunks
+    /// whose old lines only changed indentation without their deleted text.
+    #[default]
+    Block,
+    /// Only highlight changed words within small hunks that replace the same
+    /// number of lines.
+    Lines,
 }
 
 #[derive(

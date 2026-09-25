@@ -1,4 +1,4 @@
-use crate::{CharClassifier, CharKind, CharScopeContext, LanguageScope};
+use crate::{CharClassifier, CharKind, CharScopeContext, LanguageScope, WordDiffStyle};
 use anyhow::{Context, anyhow};
 use imara_diff::{Algorithm, Diff, InternedInput, Interner, Token, sources::lines};
 use std::{fmt::Write, iter, ops::Range, sync::Arc};
@@ -434,6 +434,7 @@ pub struct DiffOptions {
     pub language_scope: Option<LanguageScope>,
     pub max_word_diff_len: usize,
     pub max_word_diff_line_count: usize,
+    pub word_diff_style: WordDiffStyle,
 }
 
 impl Default for DiffOptions {
@@ -442,6 +443,7 @@ impl Default for DiffOptions {
             language_scope: Default::default(),
             max_word_diff_len: MAX_WORD_DIFF_LEN,
             max_word_diff_line_count: MAX_WORD_DIFF_LINE_COUNT,
+            word_diff_style: WordDiffStyle::Lines,
         }
     }
 }

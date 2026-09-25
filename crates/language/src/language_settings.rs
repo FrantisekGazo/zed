@@ -22,6 +22,7 @@ pub use settings::{
     LanguageSettingsContent, LineEndingSetting, LspInsertMode, REST_OF_LANGUAGE_SERVERS,
     RewrapBehavior, ShowWhitespaceSetting, SoftWrap, SoftWrapIndent, WordsCompletionMode,
 };
+pub use settings::WordDiffStyle;
 use settings::{RegisterSetting, Settings, SettingsLocation, SettingsStore, merge_from::MergeFrom};
 use shellexpand;
 use std::{num::NonZeroU32, path::Path, sync::Arc, time::Duration};
@@ -824,6 +825,24 @@ fn merge_with_editorconfig(settings: &mut LanguageSettings, cfg: &EditorconfigPr
     settings.line_ending.merge_from_option(line_ending.as_ref());
 }
 
+/// Settings controlling how changed words are found within diff hunks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, RegisterSetting)]
+pub struct WordDiffSettings {
+    pub style: WordDiffStyle,
+}
+
+impl settings::Settings for WordDiffSettings {
+    fn from_settings(content: &settings::SettingsContent) -> Self {
+        Self {
+            style: content
+                .git
+                .as_ref()
+                .and_then(|git| git.word_diff_style)
+                .unwrap_or_default(),
+        }
+    }
+}
+
 impl settings::Settings for AllLanguageSettings {
     fn from_settings(content: &settings::SettingsContent) -> Self {
         let all_languages = &content.project.all_languages;
@@ -1077,6 +1096,24 @@ mod tests {
     use gpui::TestAppContext;
     use settings::{LocalSettingsKind, LocalSettingsPath, WorktreeId};
     use util::rel_path::rel_path;
+
+    #[gpui::test]
+    fn test_word_diff_style_setting(cx: &mut App) {
+        let mut store = SettingsStore::new(cx, &settings::default_settings());
+        store.register_setting::<WordDiffSettings>();
+        assert_eq!(
+            store.get::<WordDiffSettings>(None).style,
+            WordDiffStyle::Block
+        );
+
+        store
+            .set_user_settings(r#"{ "git": { "word_diff_style": "lines" } }"#, cx)
+            .unwrap();
+        assert_eq!(
+            store.get::<WordDiffSettings>(None).style,
+            WordDiffStyle::Lines
+        );
+    }
 
     #[gpui::test]
     fn test_file_types_preserves_valid_patterns(cx: &mut TestAppContext) {
