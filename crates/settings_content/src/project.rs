@@ -864,8 +864,9 @@ pub enum GitHunkStyleSetting {
 )]
 #[serde(rename_all = "snake_case")]
 pub enum WordDiffStyle {
-    /// Compare whole hunks word by word, ignoring whitespace, and show hunks
-    /// whose old lines only changed indentation without their deleted text.
+    /// Compare whole hunks word by word, matching re-indented lines with their
+    /// original lines, and show hunks whose old lines only gained code or
+    /// indentation without their deleted text.
     #[default]
     Block,
     /// Only highlight changed words within small hunks that replace the same

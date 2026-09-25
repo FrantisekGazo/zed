@@ -7474,6 +7474,7 @@ async fn test_block_word_diff_hides_retained_base_text(cx: &mut TestAppContext) 
         vec![
             ("Padding(".to_string(), WordDiffKind::Inserted),
             ("child:".to_string(), WordDiffKind::Inserted),
+            ("  ".to_string(), WordDiffKind::Inserted),
             ("),".to_string(), WordDiffKind::Inserted),
         ]
     );
@@ -7594,6 +7595,7 @@ async fn test_block_word_diff_shows_changed_base_text(cx: &mut TestAppContext) {
         vec![
             ("foo".to_string(), WordDiffKind::Modified),
             ("bar".to_string(), WordDiffKind::Modified),
+            ("  ".to_string(), WordDiffKind::Inserted),
             (",".to_string(), WordDiffKind::Inserted),
         ]
     );

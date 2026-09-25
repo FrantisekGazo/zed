@@ -1883,8 +1883,9 @@
     // How changed words are found and highlighted within diff hunks.
     // This setting can take two values:
     //
-    // 1. Compare whole hunks word by word, ignoring whitespace. Hunks whose
-    //    old lines only changed indentation are shown without their deleted text:
+    // 1. Compare whole hunks word by word, matching re-indented lines with their
+    //    original lines. Hunks whose old lines only gained code or indentation
+    //    are shown without their deleted text:
     //    "word_diff_style": "block"
     // 2. Only highlight changed words within small hunks that replace the same
     //    number of lines:

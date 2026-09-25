@@ -171,11 +171,10 @@ pub struct DiffHunk {
     pub buffer_word_diffs: Vec<(Range<Anchor>, WordDiffKind)>,
     // Offsets relative to the start of the deleted diff that represent word diff locations
     pub base_word_diffs: Vec<(Range<usize>, WordDiffKind)>,
-    /// Whether the word diffs were computed across the whole hunk, ignoring whitespace.
+    /// Whether the word diffs were computed across the whole hunk.
     pub is_block_diff: bool,
-    /// Whether every word of the deleted text is still present in the buffer, so
-    /// that the deleted text only differs from the buffer text in whitespace and
-    /// insertions.
+    /// Whether the deleted text survives unchanged in the buffer text, apart from
+    /// insertions and added indentation.
     pub base_retained: bool,
 }
 
@@ -2623,6 +2622,7 @@ mod tests {
                 vec![
                     ("Padding(".to_string(), WordDiffKind::Inserted),
                     ("child:".to_string(), WordDiffKind::Inserted),
+                    ("  ".to_string(), WordDiffKind::Inserted),
                     ("),".to_string(), WordDiffKind::Inserted),
                 ]
             )

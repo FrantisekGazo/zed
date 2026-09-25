@@ -246,20 +246,26 @@ pub enum WordDiffKind {
 pub struct BlockWordDiff {
     pub old: Vec<(Range<usize>, WordDiffKind)>,
     pub new: Vec<(Range<usize>, WordDiffKind)>,
+    whitespace_changed_within_lines: bool,
 }
 
 impl BlockWordDiff {
+    /// Whether the old text survives unchanged in the new text, apart from
+    /// insertions and added indentation, so that it can be hidden.
     pub fn old_side_retained(&self) -> bool {
-        self.old.is_empty()
+        self.old.is_empty() && !self.whitespace_changed_within_lines
     }
 }
 
-/// Computes a whitespace-insensitive word diff across a whole block of lines,
-/// classifying each changed region as modified, inserted or deleted.
+/// Computes a word diff across a whole block of lines, classifying each changed
+/// region as modified, inserted or deleted.
 ///
-/// Lines whose content only differs in whitespace are matched first, so that
-/// re-indented code (e.g. code wrapped in a new call) pairs with its original
-/// lines, and tokens are then only compared within the remaining unmatched lines.
+/// Lines whose words are the same are matched first, regardless of whitespace,
+/// so that re-indented code (e.g. code wrapped in a new call) pairs with its
+/// original lines, and words are then only compared within the remaining
+/// unmatched lines. Whitespace changes between matched words, such as changed
+/// indentation, are reported as changed regions of their own, while trailing
+/// whitespace is ignored.
 ///
 /// Returns `None` when either side is too large or contains no non-whitespace
 /// tokens, in which case callers should fall back to a line-based display.
@@ -280,14 +286,24 @@ pub fn block_word_diff(
     }
 
     let mut result = BlockWordDiff::default();
+    let mut matched_tokens = Vec::new();
     let mut line_input: InternedInput<&str> = InternedInput::default();
     line_input.update_before(old_lines.keys.iter().map(String::as_str));
     line_input.update_after(new_lines.keys.iter().map(String::as_str));
     let line_diff = Diff::compute(Algorithm::Histogram, &line_input);
     let mut token_input: InternedInput<&str> = InternedInput::default();
+    let mut old_matched_tokens_start = 0;
+    let mut new_matched_tokens_start = 0;
     for hunk in line_diff.hunks() {
         let old_tokens = old_lines.token_range_for_lines(hunk.before);
         let new_tokens = new_lines.token_range_for_lines(hunk.after);
+        push_matched_tokens(
+            old_matched_tokens_start..old_tokens.start,
+            new_matched_tokens_start,
+            &mut matched_tokens,
+        );
+        old_matched_tokens_start = old_tokens.end;
+        new_matched_tokens_start = new_tokens.end;
         if old_tokens.is_empty() || new_tokens.is_empty() {
             old_lines.push_ranges(old_tokens, WordDiffKind::Deleted, &mut result.old);
             new_lines.push_ranges(new_tokens, WordDiffKind::Inserted, &mut result.new);
@@ -298,11 +314,20 @@ pub fn block_word_diff(
         token_input.update_before(old_lines.token_texts(old_tokens.clone()));
         token_input.update_after(new_lines.token_texts(new_tokens.clone()));
         let token_diff = Diff::compute(Algorithm::Histogram, &token_input);
+        let mut old_unchanged_start = old_tokens.start;
+        let mut new_unchanged_start = new_tokens.start;
         for token_hunk in token_diff.hunks() {
             let old_range = old_tokens.start + token_hunk.before.start as usize
                 ..old_tokens.start + token_hunk.before.end as usize;
             let new_range = new_tokens.start + token_hunk.after.start as usize
                 ..new_tokens.start + token_hunk.after.end as usize;
+            push_matched_tokens(
+                old_unchanged_start..old_range.start,
+                new_unchanged_start,
+                &mut matched_tokens,
+            );
+            old_unchanged_start = old_range.end;
+            new_unchanged_start = new_range.end;
             let kind = if old_range.is_empty() {
                 WordDiffKind::Inserted
             } else if new_range.is_empty() {
@@ -313,8 +338,144 @@ pub fn block_word_diff(
             old_lines.push_ranges(old_range, kind, &mut result.old);
             new_lines.push_ranges(new_range, kind, &mut result.new);
         }
+        push_matched_tokens(
+            old_unchanged_start..old_tokens.end,
+            new_unchanged_start,
+            &mut matched_tokens,
+        );
     }
+    push_matched_tokens(
+        old_matched_tokens_start..old_lines.tokens.len(),
+        new_matched_tokens_start,
+        &mut matched_tokens,
+    );
+
+    if matched_tokens.first() == Some(&(0, 0)) {
+        push_whitespace_changes(
+            &old_lines,
+            0..old_lines.tokens[0].start,
+            &new_lines,
+            0..new_lines.tokens[0].start,
+            true,
+            &mut result,
+        );
+    }
+    for pair in matched_tokens.windows(2) {
+        let [(old_ix, new_ix), (next_old_ix, next_new_ix)] = *pair else {
+            continue;
+        };
+        if next_old_ix == old_ix + 1 && next_new_ix == new_ix + 1 {
+            push_whitespace_changes(
+                &old_lines,
+                old_lines.tokens[old_ix].end..old_lines.tokens[next_old_ix].start,
+                &new_lines,
+                new_lines.tokens[new_ix].end..new_lines.tokens[next_new_ix].start,
+                false,
+                &mut result,
+            );
+        }
+    }
+
+    result.old.sort_by_key(|(range, _)| range.start);
+    result.new.sort_by_key(|(range, _)| range.start);
     Some(result)
+}
+
+/// Pairs up the old tokens in the given range with the new tokens starting at
+/// `new_start`, which are known to be equal.
+fn push_matched_tokens(
+    old_tokens: Range<usize>,
+    new_start: usize,
+    matched_tokens: &mut Vec<(usize, usize)>,
+) {
+    let new_start = new_start as isize - old_tokens.start as isize;
+    matched_tokens
+        .extend(old_tokens.map(|old_ix| (old_ix, (old_ix as isize + new_start) as usize)));
+}
+
+/// Compares the whitespace between two pairs of matched tokens. When both gaps
+/// start new lines, only the indentation is compared, so that trailing
+/// whitespace and blank lines are ignored.
+fn push_whitespace_changes(
+    old_lines: &BlockLines,
+    old_gap: Range<usize>,
+    new_lines: &BlockLines,
+    new_gap: Range<usize>,
+    at_block_start: bool,
+    result: &mut BlockWordDiff,
+) {
+    let indentation_start = |lines: &BlockLines, gap: &Range<usize>| {
+        if let Some(newline_ix) = lines.text[gap.clone()].rfind('\n') {
+            Some(gap.start + newline_ix + 1)
+        } else if at_block_start {
+            Some(gap.start)
+        } else {
+            None
+        }
+    };
+    match (
+        indentation_start(old_lines, &old_gap),
+        indentation_start(new_lines, &new_gap),
+    ) {
+        (Some(old_start), Some(new_start)) => {
+            push_whitespace_diff(
+                old_lines.text,
+                old_start..old_gap.end,
+                new_lines.text,
+                new_start..new_gap.end,
+                result,
+            );
+        }
+        (None, None) => {
+            if push_whitespace_diff(old_lines.text, old_gap, new_lines.text, new_gap, result) {
+                result.whitespace_changed_within_lines = true;
+            }
+        }
+        (Some(old_start), None) => {
+            if old_start < old_gap.end {
+                result
+                    .old
+                    .push((old_start..old_gap.end, WordDiffKind::Deleted));
+            }
+            result.whitespace_changed_within_lines = true;
+        }
+        (None, Some(new_start)) => {
+            if new_start < new_gap.end {
+                result
+                    .new
+                    .push((new_start..new_gap.end, WordDiffKind::Inserted));
+            }
+            result.whitespace_changed_within_lines = true;
+        }
+    }
+}
+
+/// Pushes the difference between two runs of whitespace after their common
+/// prefix, returning whether they differ.
+fn push_whitespace_diff(
+    old_text: &str,
+    old_range: Range<usize>,
+    new_text: &str,
+    new_range: Range<usize>,
+    result: &mut BlockWordDiff,
+) -> bool {
+    let common_prefix_len = old_text[old_range.clone()]
+        .char_indices()
+        .zip(new_text[new_range.clone()].chars())
+        .find(|((_, old_char), new_char)| old_char != new_char)
+        .map_or_else(|| old_range.len().min(new_range.len()), |((ix, _), _)| ix);
+    let old_changed = old_range.start + common_prefix_len..old_range.end;
+    let new_changed = new_range.start + common_prefix_len..new_range.end;
+    match (old_changed.is_empty(), new_changed.is_empty()) {
+        (true, true) => return false,
+        (true, false) => result.new.push((new_changed, WordDiffKind::Inserted)),
+        (false, true) => result.old.push((old_changed, WordDiffKind::Deleted)),
+        (false, false) => {
+            result.old.push((old_changed, WordDiffKind::Modified));
+            result.new.push((new_changed, WordDiffKind::Modified));
+        }
+    }
+    true
 }
 
 /// Delimiters are always separate tokens, because wrapping code in a new call
@@ -716,6 +877,7 @@ mod tests {
                     ("Padding(", WordDiffKind::Inserted),
                     ("padding: 8,", WordDiffKind::Inserted),
                     ("child:", WordDiffKind::Inserted),
+                    ("  ", WordDiffKind::Inserted),
                     ("),", WordDiffKind::Inserted),
                 ]
             ))
@@ -764,9 +926,16 @@ mod tests {
                         WordDiffKind::Inserted
                     ),
                     ("child:", WordDiffKind::Inserted),
+                    ("  ", WordDiffKind::Inserted),
+                    ("  ", WordDiffKind::Inserted),
+                    ("  ", WordDiffKind::Inserted),
                     ("firstWhereOrNull", WordDiffKind::Modified),
+                    ("  ", WordDiffKind::Inserted),
                     ("!= null", WordDiffKind::Modified),
+                    ("  ", WordDiffKind::Inserted),
+                    ("  ", WordDiffKind::Inserted),
                     ("somethingElse", WordDiffKind::Modified),
+                    ("  ", WordDiffKind::Inserted),
                     ("),", WordDiffKind::Inserted),
                 ]
             ))
@@ -781,16 +950,92 @@ mod tests {
     }
 
     #[test]
-    fn test_block_word_diff_ignores_whitespace() {
+    fn test_block_word_diff_highlights_indentation_changes() {
         let old_text = "foo(\n  a,\n)\n";
         let new_text = "  foo(\n    a,\n  )\n";
+        let diff = block_word_diff(old_text, new_text, None).unwrap();
+        assert!(diff.old_side_retained());
         assert_eq!(
             render_block_word_diff(old_text, new_text),
-            Some((vec![], vec![]))
+            Some((
+                vec![],
+                vec![
+                    ("  ", WordDiffKind::Inserted),
+                    ("  ", WordDiffKind::Inserted),
+                    ("  ", WordDiffKind::Inserted),
+                ]
+            ))
+        );
+
+        let diff = block_word_diff(new_text, old_text, None).unwrap();
+        assert!(!diff.old_side_retained());
+        assert_eq!(
+            render_block_word_diff(new_text, old_text),
+            Some((
+                vec![
+                    ("  ", WordDiffKind::Deleted),
+                    ("  ", WordDiffKind::Deleted),
+                    ("  ", WordDiffKind::Deleted),
+                ],
+                vec![]
+            ))
+        );
+
+        assert_eq!(
+            render_block_word_diff("\tfoo\n", "  foo\n"),
+            Some((
+                vec![("\t", WordDiffKind::Modified)],
+                vec![("  ", WordDiffKind::Modified)]
+            ))
+        );
+    }
+
+    #[test]
+    fn test_block_word_diff_highlights_whitespace_within_lines() {
+        let diff = block_word_diff("var total=1+2;\n", "var total = 1 + 2;\n", None).unwrap();
+        assert!(!diff.old_side_retained());
+        assert_eq!(
+            render_block_word_diff("var total=1+2;\n", "var total = 1 + 2;\n"),
+            Some((
+                vec![],
+                vec![
+                    (" ", WordDiffKind::Inserted),
+                    (" ", WordDiffKind::Inserted),
+                    (" ", WordDiffKind::Inserted),
+                    (" ", WordDiffKind::Inserted),
+                ]
+            ))
         );
         assert_eq!(
-            render_block_word_diff("a b\n", "a    b\n"),
+            render_block_word_diff("x = \"hello world\";\n", "x = \"hello  world\";\n"),
+            Some((vec![], vec![(" ", WordDiffKind::Inserted)]))
+        );
+        assert_eq!(
+            render_block_word_diff("a  b\n", "a\tb\n"),
+            Some((
+                vec![("  ", WordDiffKind::Modified)],
+                vec![("\t", WordDiffKind::Modified)]
+            ))
+        );
+        assert_eq!(
+            render_block_word_diff("a b  \n", "a b\n"),
             Some((vec![], vec![]))
+        );
+    }
+
+    #[test]
+    fn test_block_word_diff_highlights_indentation_of_split_lines() {
+        let diff = block_word_diff("foo(1)\n", "foo(\n  1,\n)\n", None).unwrap();
+        assert!(!diff.old_side_retained());
+        assert_eq!(
+            render_block_word_diff("foo(1)\n", "foo(\n  1,\n)\n"),
+            Some((
+                vec![],
+                vec![
+                    ("  ", WordDiffKind::Inserted),
+                    (",", WordDiffKind::Inserted)
+                ]
+            ))
         );
     }
 
