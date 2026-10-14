@@ -11575,6 +11575,8 @@ mod tests {
         assert_eq!(
             thumb_fills_track.thumb_pixels_per_editor_line(&thumb_fills_track.thumb_layout(0.)),
             None
+        );
+    }
 
     #[test]
     fn test_gutter_and_line_number_colors_for_block_diffs() {
