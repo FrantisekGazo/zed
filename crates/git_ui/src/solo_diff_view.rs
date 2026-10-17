@@ -522,7 +522,9 @@ impl Item for SoloDiffView {
     }
 
     fn active_project_path(&self, cx: &App) -> Option<ProjectPath> {
-        self.editor.read(cx).active_project_path(cx)
+        // The staged view displays an index buffer with no file, so resolve the
+        // path from the worktree buffer instead.
+        project::ProjectItem::project_path(self.buffer.read(cx), cx)
     }
 
     fn set_nav_history(
