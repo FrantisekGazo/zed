@@ -31444,6 +31444,46 @@ async fn test_merge_base_diff_hunks_are_read_only(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+async fn test_block_word_diff_shows_only_new_lines(
+    executor: BackgroundExecutor,
+    cx: &mut TestAppContext,
+) {
+    init_test(cx, |_| {});
+    cx.update(|cx| {
+        SettingsStore::update_global(cx, |store, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings.git.get_or_insert_default().word_diff_style =
+                    Some(settings::WordDiffStyle::Block);
+            });
+        });
+    });
+    let mut cx = EditorTestContext::new(cx).await;
+
+    cx.set_state("a\nreturn Padding(\n  child: Foo(\n    ˇx: 2,\n  ),\n);\nb\n");
+    cx.set_head_text("a\nreturn Foo(\n  x: 1,\n);\nb\n");
+    executor.run_until_parked();
+    cx.update_editor(|editor, window, cx| {
+        editor.expand_all_diff_hunks(&ExpandAllDiffHunks, window, cx);
+    });
+    executor.run_until_parked();
+    cx.assert_state_with_diff(
+        "  a\n+ return Padding(\n+   child: Foo(\n+     ˇx: 2,\n+   ),\n  );\n  b\n".to_string(),
+    );
+    cx.update_editor(|editor, window, cx| {
+        let snapshot = editor.snapshot(window, cx);
+        let is_block_diff = snapshot
+            .buffer_snapshot()
+            .row_infos(MultiBufferRow(0))
+            .map(|row_info| row_info.is_block_diff)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            is_block_diff,
+            vec![false, true, true, true, true, false, false, false]
+        );
+    });
+}
+
+#[gpui::test]
 async fn test_toggle_selected_diff_hunks(executor: BackgroundExecutor, cx: &mut TestAppContext) {
     init_test(cx, |_| {});
 
