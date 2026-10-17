@@ -15,9 +15,9 @@ use futures_lite::future::yield_now;
 use git::{repository::RepoPath, status::FileStatus};
 use gpui::{
     App, AppContext as _, AsyncWindowContext, Entity, EventEmitter, FocusHandle, Focusable, Render,
-    SharedString, Subscription, Task, WeakEntity,
+    SharedString, Subscription, Task, WeakEntity, actions,
 };
-use language::{Anchor, Buffer, BufferId, Capability, OffsetRangeExt};
+use language::{Anchor, Buffer, BufferId, Capability, OffsetRangeExt, Point};
 use multi_buffer::{MultiBuffer, PathKey};
 use project::{
     ConflictSet, Project, ProjectPath,
@@ -29,13 +29,22 @@ use project::{
 use settings::{GitPanelGroupBy, GitPanelSortBy, Settings, SettingsStore};
 use std::{collections::BTreeMap, sync::Arc};
 use theme::ActiveTheme;
-use ui::{CommonAnimationExt as _, KeyBinding, prelude::*};
+use ui::{CommonAnimationExt as _, KeyBinding, Tooltip, prelude::*};
 use util::{ResultExt as _, rel_path::RelPath};
 use workspace::{
     CloseActiveItem, ItemNavHistory, Workspace,
     item::{Item, SaveOptions},
 };
 use ztracing::instrument;
+
+actions!(
+    git,
+    [
+        /// Toggles between showing only the changed lines and showing the
+        /// full content of every file in the diff.
+        ToggleFullFileDiff,
+    ]
+);
 
 /// Loading every changed file at once makes the first one land no sooner than the
 /// last, leaving a large diff on a spinner. Throughput flattens past this point.
@@ -59,6 +68,10 @@ pub struct DiffMultibuffer {
     pending_scroll: Option<PathKey>,
     review_comment_count: usize,
     empty_label: SharedString,
+    showing_full_file: bool,
+    /// Excerpt updates keep existing context, so switching back to showing
+    /// changes only requires replacing each file's excerpts outright.
+    excerpts_to_reset: HashSet<RepoPath>,
     _task: Task<Result<()>>,
     _subscription: Subscription,
 }
@@ -171,6 +184,8 @@ impl DiffMultibuffer {
             pending_scroll: None,
             review_comment_count: 0,
             empty_label: empty_label.into(),
+            showing_full_file: false,
+            excerpts_to_reset: HashSet::default(),
             _task: task,
             _subscription: Subscription::join(
                 branch_diff_subscription,
@@ -195,6 +210,31 @@ impl DiffMultibuffer {
         self.branch_diff.update(cx, |branch_diff, cx| {
             branch_diff.set_repo(repo, cx);
         });
+    }
+
+    pub(crate) fn is_showing_full_file(&self) -> bool {
+        self.showing_full_file
+    }
+
+    fn toggle_full_file_diff(
+        &mut self,
+        _: &ToggleFullFileDiff,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.showing_full_file = !self.showing_full_file;
+        let showing_full_file = self.showing_full_file;
+        self.excerpts_to_reset = self.buffer_subscriptions.keys().cloned().collect();
+        self.editor.update(cx, |editor, cx| {
+            editor.rhs_editor().update(cx, |editor, cx| {
+                editor.set_allow_git_diff_scrollbar_markers(showing_full_file, cx);
+            });
+        });
+        self._task = window.spawn(cx, {
+            let this = cx.weak_entity();
+            async |cx| Self::refresh(this, cx).await
+        });
+        cx.notify();
     }
 
     pub(crate) fn is_dirty(&self, cx: &App) -> bool {
@@ -495,6 +535,7 @@ impl DiffMultibuffer {
                 }
             })
         });
+        let reset_excerpts = self.excerpts_to_reset.remove(&repo_path);
         self.buffer_subscriptions.insert(
             repo_path,
             BufferSubscriptions {
@@ -509,7 +550,9 @@ impl DiffMultibuffer {
         let snapshot = display_buffer.read(cx).snapshot();
         let diff_snapshot = diff.read(cx).snapshot(cx);
 
-        let excerpt_ranges = {
+        let excerpt_ranges = if self.showing_full_file {
+            vec![Point::zero()..snapshot.max_point()]
+        } else {
             let diff_hunk_ranges = diff_snapshot
                 .hunks_intersecting_range(
                     Anchor::min_max_range_for_buffer(snapshot.remote_id()),
@@ -534,11 +577,18 @@ impl DiffMultibuffer {
 
         let (was_empty, is_excerpt_newly_added) = self.editor.update(cx, |editor, cx| {
             let was_empty = editor.rhs_editor().read(cx).buffer().read(cx).is_empty();
+            if reset_excerpts {
+                editor.remove_excerpts_for_path(path_key.clone(), cx);
+            }
             let is_newly_added = editor.update_excerpts_for_path(
                 path_key.clone(),
                 display_buffer,
                 excerpt_ranges,
-                multibuffer_context_lines(cx),
+                if self.showing_full_file {
+                    0
+                } else {
+                    multibuffer_context_lines(cx)
+                },
                 diff,
                 cx,
             );
@@ -547,7 +597,8 @@ impl DiffMultibuffer {
                     conflict_view::buffer_ranges_updated(editor, conflict_set, cx);
                 });
             }
-            (was_empty, is_newly_added)
+            // Re-adding a reset file's excerpts must not fold it again.
+            (was_empty, is_newly_added && !reset_excerpts)
         });
 
         self.editor.update(cx, |editor, cx| {
@@ -909,6 +960,7 @@ impl Render for DiffMultibuffer {
         div()
             .track_focus(&self.focus_handle)
             .key_context(if is_empty { "EmptyPane" } else { "GitDiff" })
+            .on_action(cx.listener(Self::toggle_full_file_diff))
             .bg(cx.theme().colors().editor_background)
             .flex()
             .items_center()
@@ -968,6 +1020,25 @@ impl Render for DiffMultibuffer {
             })
             .when(!is_empty, |el| el.child(self.editor.clone()))
     }
+}
+
+pub(crate) fn render_full_file_toggle_button(
+    showing_full_file: bool,
+    focus_handle: &FocusHandle,
+) -> IconButton {
+    let (icon, tooltip) = if showing_full_file {
+        (IconName::ChevronDownUp, "Show Changes Only")
+    } else {
+        (IconName::ChevronUpDown, "Show Full Files")
+    };
+    IconButton::new("toggle-full-file-diff", icon)
+        .icon_size(IconSize::Small)
+        .toggle_state(showing_full_file)
+        .tooltip(Tooltip::for_action_title_in(
+            tooltip,
+            &ToggleFullFileDiff,
+            focus_handle,
+        ))
 }
 
 const CONFLICT_SORT_PREFIX: u64 = 1;
