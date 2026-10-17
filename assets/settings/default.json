@@ -1188,6 +1188,10 @@
       "default_width": 300,
       // Automatically open the Threads Sidebar when opening a folder in an existing window.
       "auto_open": true,
+      // How to group threads in the Threads Sidebar. Can be one of:
+      // - "project": show the threads of a repository and all of its git worktrees in one group.
+      // - "worktree": show the threads of each git worktree under their own heading.
+      "group_by": "project",
     },
     // Default fixed width when the agent panel is docked to the left or right and
     // `flexible` is false.
