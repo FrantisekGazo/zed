@@ -1,6 +1,6 @@
 use crate::{
     branch_diff::BranchDiff,
-    diff_multibuffer::DiffMultibuffer,
+    diff_multibuffer::{DiffMultibuffer, ToggleFullFileDiff, render_full_file_toggle_button},
     git_panel::{GitPanel, GitPanelAddon, GitStatusEntry},
     staged_diff::StagedDiff,
     unstaged_diff::UnstagedDiff,
@@ -327,6 +327,10 @@ impl ProjectDiff {
 
     pub fn calculate_changed_lines(&self, cx: &App) -> (u32, u32) {
         self.diff.read(cx).calculate_changed_lines(cx)
+    }
+
+    fn is_showing_full_file(&self, cx: &App) -> bool {
+        self.diff.read(cx).is_showing_full_file()
     }
 
     /// Returns the total count of review comments across all hunks/files.
@@ -823,6 +827,7 @@ impl Render for ProjectDiffToolbar {
 
         let (additions, deletions) = project_diff.read(cx).calculate_changed_lines(cx);
         let is_multibuffer_empty = project_diff.read(cx).multibuffer(cx).read(cx).is_empty();
+        let showing_full_file = project_diff.read(cx).is_showing_full_file(cx);
 
         let stage_all_button_width = rems(5.);
 
@@ -840,6 +845,14 @@ impl Render for ProjectDiffToolbar {
                 ))
                 .child(Divider::vertical().ml_1())
             })
+            .child(
+                render_full_file_toggle_button(showing_full_file, &focus_handle).on_click(
+                    cx.listener(|this, _, window, cx| {
+                        this.dispatch_action(&ToggleFullFileDiff, window, cx)
+                    }),
+                ),
+            )
+            .child(Divider::vertical())
             // n.b. the only reason these arrows are here is because we don't
             // support "undo" for staging so we need a way to go back.
             .child(
