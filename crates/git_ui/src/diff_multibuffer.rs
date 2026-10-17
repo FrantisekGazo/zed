@@ -59,6 +59,7 @@ pub struct DiffMultibuffer {
     pending_scroll: Option<PathKey>,
     review_comment_count: usize,
     empty_label: SharedString,
+    path_filter: Option<RepoPath>,
     _task: Task<Result<()>>,
     _subscription: Subscription,
 }
@@ -171,6 +172,7 @@ impl DiffMultibuffer {
             pending_scroll: None,
             review_comment_count: 0,
             empty_label: empty_label.into(),
+            path_filter: None,
             _task: task,
             _subscription: Subscription::join(
                 branch_diff_subscription,
@@ -189,6 +191,28 @@ impl DiffMultibuffer {
 
     pub(crate) fn repo(&self, cx: &App) -> Option<Entity<Repository>> {
         self.branch_diff.read(cx).repo().cloned()
+    }
+
+    pub(crate) fn path_filter(&self) -> Option<&RepoPath> {
+        self.path_filter.as_ref()
+    }
+
+    /// Restricts the diff to a single file, while the underlying buffer list
+    /// keeps tracking every changed file so it can be shared with other views.
+    pub(crate) fn set_path_filter(
+        &mut self,
+        path_filter: Option<RepoPath>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.path_filter == path_filter {
+            return;
+        }
+        self.path_filter = path_filter;
+        self._task = window.spawn(cx, {
+            let this = cx.weak_entity();
+            async |cx| Self::refresh(this, cx).await
+        });
     }
 
     pub(crate) fn set_repo(&mut self, repo: Option<Entity<Repository>>, cx: &mut Context<Self>) {
@@ -625,10 +649,13 @@ impl DiffMultibuffer {
     #[instrument(skip(this, cx))]
     pub(crate) async fn refresh(this: WeakEntity<Self>, cx: &mut AsyncWindowContext) -> Result<()> {
         let entries = this.update(cx, |this, cx| {
-            let (repo, buffers_to_load) = this.branch_diff.update(cx, |branch_diff, cx| {
+            let (repo, mut buffers_to_load) = this.branch_diff.update(cx, |branch_diff, cx| {
                 let load_buffers = branch_diff.load_buffers(cx);
                 (branch_diff.repo().cloned(), load_buffers)
             });
+            if let Some(path_filter) = &this.path_filter {
+                buffers_to_load.retain(|diff_buffer| &diff_buffer.repo_path == path_filter);
+            }
             let mut previous_paths = this
                 .multibuffer
                 .read(cx)
