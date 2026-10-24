@@ -15,12 +15,12 @@ use language_model::LanguageModel;
 use project::DisableAiSettings;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use settings::AgentNotificationStyle;
 use settings::{
-    AgentNotificationStyle, DockPosition, DockSide, IntoGpui, LanguageModelParameters,
-    LanguageModelSelection, NotifyWhenAgentWaiting, PlaySoundWhenAgentDone, RegisterSetting,
-    Settings, SettingsContent, SettingsStore, SidebarDockPosition, SidebarSide,
-    ThinkingBlockDisplay, ToolPermissionMode, update_settings_file,
-    update_settings_file_with_completion,
+    DockPosition, DockSide, IntoGpui, LanguageModelParameters, LanguageModelSelection,
+    NotifyWhenAgentWaiting, PlaySoundWhenAgentDone, RegisterSetting, Settings, SettingsContent,
+    SettingsStore, SidebarDockPosition, SidebarSide, ThinkingBlockDisplay, ToolPermissionMode,
+    update_settings_file, update_settings_file_with_completion,
 };
 use util::ResultExt as _;
 
