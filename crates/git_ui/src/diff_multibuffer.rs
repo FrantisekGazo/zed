@@ -15,9 +15,9 @@ use futures_lite::future::yield_now;
 use git::{repository::RepoPath, status::FileStatus};
 use gpui::{
     App, AppContext as _, AsyncWindowContext, Entity, EventEmitter, FocusHandle, Focusable, Render,
-    SharedString, Subscription, Task, WeakEntity, actions,
+    SharedString, Subscription, Task, WeakEntity,
 };
-use language::{Anchor, Buffer, BufferId, Capability, OffsetRangeExt, Point};
+use language::{Anchor, Buffer, BufferId, Capability, OffsetRangeExt};
 use multi_buffer::{MultiBuffer, PathKey};
 use project::{
     ConflictSet, Project, ProjectPath,
@@ -37,7 +37,7 @@ use workspace::{
 };
 use ztracing::instrument;
 
-actions!(
+gpui::actions!(
     git,
     [
         /// Toggles between showing only the changed lines and showing the
@@ -551,7 +551,7 @@ impl DiffMultibuffer {
         let diff_snapshot = diff.read(cx).snapshot(cx);
 
         let excerpt_ranges = if self.showing_full_file {
-            vec![Point::zero()..snapshot.max_point()]
+            vec![language::Point::zero()..snapshot.max_point()]
         } else {
             let diff_hunk_ranges = diff_snapshot
                 .hunks_intersecting_range(
