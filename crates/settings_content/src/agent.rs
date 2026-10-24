@@ -467,6 +467,16 @@ impl AgentSettingsContent {
         self.speech_to_text.get_or_insert_default().trigger_mode = Some(trigger_mode);
     }
 
+    pub fn set_speech_to_text_api_url(&mut self, value: String) {
+        self.speech_to_text.get_or_insert_default().api_url =
+            Some(value).filter(|value| !value.trim().is_empty());
+    }
+
+    pub fn set_speech_to_text_model(&mut self, value: String) {
+        self.speech_to_text.get_or_insert_default().model =
+            Some(value).filter(|value| !value.trim().is_empty());
+    }
+
     pub fn add_favorite_model(&mut self, model: LanguageModelSelection) {
         // Note: this is intentional to not compare using `PartialEq`here.
         // Full equality would treat entries that differ just in thinking/effort/speed
