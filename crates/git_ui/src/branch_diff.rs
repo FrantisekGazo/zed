@@ -796,10 +796,10 @@ impl Render for BranchDiffToolbar {
             .multibuffer()
             .read(cx)
             .is_empty();
+        let showing_full_file = branch_diff.read(cx).diff.read(cx).is_showing_full_file();
         let is_ai_enabled = AgentSettings::get_global(cx).enabled(cx);
 
         let show_review_button = !is_multibuffer_empty && is_ai_enabled;
-        let showing_full_file = branch_diff.read(cx).diff.read(cx).is_showing_full_file();
 
         h_flex()
             .my_neg_1()
@@ -1108,6 +1108,91 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_toggle_full_file_diff(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let base_text = (1..=12)
+            .map(|line| format!("line {line}\n"))
+            .collect::<String>();
+        let working_text = base_text.replace("line 6\n", "line six\n");
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/project"),
+            json!({
+                ".git": {},
+                "a.txt": working_text.clone(),
+            }),
+        )
+        .await;
+        fs.set_head_and_index_for_repo(
+            Path::new(path!("/project/.git")),
+            &[("a.txt", working_text)],
+        );
+        fs.set_merge_base_content_for_repo(
+            Path::new(path!("/project/.git")),
+            &[("a.txt", base_text)],
+        );
+        let project = Project::test(fs.clone(), [path!("/project").as_ref()], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+        let diff = cx
+            .update(|window, cx| {
+                BranchDiff::new_with_default_branch(project.clone(), workspace.clone(), window, cx)
+            })
+            .await
+            .unwrap();
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.add_item_to_active_pane(Box::new(diff.clone()), None, true, window, cx);
+        });
+        cx.run_until_parked();
+
+        let editor = diff.read_with(cx, |diff, cx| diff.editor(cx).read(cx).rhs_editor().clone());
+        let changes_only = "
+              ˇline 4
+              line 5
+            - line 6
+            + line six
+              line 7
+              line 8
+              line 9"
+            .unindent();
+        assert_state_with_diff(&editor, cx, &changes_only);
+
+        cx.update(|window, cx| {
+            editor.focus_handle(cx).focus(window, cx);
+            window.dispatch_action(ToggleFullFileDiff.boxed_clone(), cx);
+        });
+        cx.run_until_parked();
+        assert_state_with_diff(
+            &editor,
+            cx,
+            &"
+                  line 1
+                  line 2
+                  line 3
+                  ˇline 4
+                  line 5
+                - line 6
+                + line six
+                  line 7
+                  line 8
+                  line 9
+                  line 10
+                  line 11
+                  line 12
+            "
+            .unindent(),
+        );
+
+        cx.update(|window, cx| {
+            window.dispatch_action(ToggleFullFileDiff.boxed_clone(), cx);
+        });
+        cx.run_until_parked();
+        assert_state_with_diff(&editor, cx, &changes_only);
+    }
+
+    #[gpui::test]
     async fn test_branch_diff(cx: &mut TestAppContext) {
         init_test(cx);
 
@@ -1277,90 +1362,5 @@ mod tests {
 
         assert_eq!(active_base_ref, "origin/main");
         assert_eq!(base_refs, vec!["origin/main", "topic"]);
-    }
-
-    #[gpui::test]
-    async fn test_toggle_full_file_diff(cx: &mut TestAppContext) {
-        init_test(cx);
-
-        let base_text = (1..=12)
-            .map(|line| format!("line {line}\n"))
-            .collect::<String>();
-        let working_text = base_text.replace("line 6\n", "line six\n");
-        let fs = FakeFs::new(cx.executor());
-        fs.insert_tree(
-            path!("/project"),
-            json!({
-                ".git": {},
-                "a.txt": working_text.clone(),
-            }),
-        )
-        .await;
-        fs.set_head_and_index_for_repo(
-            Path::new(path!("/project/.git")),
-            &[("a.txt", working_text)],
-        );
-        fs.set_merge_base_content_for_repo(
-            Path::new(path!("/project/.git")),
-            &[("a.txt", base_text)],
-        );
-        let project = Project::test(fs.clone(), [path!("/project").as_ref()], cx).await;
-        let (multi_workspace, cx) =
-            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
-        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
-        let diff = cx
-            .update(|window, cx| {
-                BranchDiff::new_with_default_branch(project.clone(), workspace.clone(), window, cx)
-            })
-            .await
-            .unwrap();
-        workspace.update_in(cx, |workspace, window, cx| {
-            workspace.add_item_to_active_pane(Box::new(diff.clone()), None, true, window, cx);
-        });
-        cx.run_until_parked();
-
-        let editor = diff.read_with(cx, |diff, cx| diff.editor(cx).read(cx).rhs_editor().clone());
-        let changes_only = "
-              ˇline 4
-              line 5
-            - line 6
-            + line six
-              line 7
-              line 8
-              line 9"
-            .unindent();
-        assert_state_with_diff(&editor, cx, &changes_only);
-
-        cx.update(|window, cx| {
-            editor.focus_handle(cx).focus(window, cx);
-            window.dispatch_action(ToggleFullFileDiff.boxed_clone(), cx);
-        });
-        cx.run_until_parked();
-        assert_state_with_diff(
-            &editor,
-            cx,
-            &"
-                  line 1
-                  line 2
-                  line 3
-                  ˇline 4
-                  line 5
-                - line 6
-                + line six
-                  line 7
-                  line 8
-                  line 9
-                  line 10
-                  line 11
-                  line 12
-            "
-            .unindent(),
-        );
-
-        cx.update(|window, cx| {
-            window.dispatch_action(ToggleFullFileDiff.boxed_clone(), cx);
-        });
-        cx.run_until_parked();
-        assert_state_with_diff(&editor, cx, &changes_only);
     }
 }

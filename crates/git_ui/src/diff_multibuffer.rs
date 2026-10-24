@@ -65,13 +65,13 @@ pub struct DiffMultibuffer {
     buffer_subscriptions: HashMap<RepoPath, BufferSubscriptions>,
     workspace: WeakEntity<Workspace>,
     focus_handle: FocusHandle,
-    pending_scroll: Option<PathKey>,
-    review_comment_count: usize,
-    empty_label: SharedString,
     showing_full_file: bool,
     /// Excerpt updates keep existing context, so switching back to showing
     /// changes only requires replacing each file's excerpts outright.
     excerpts_to_reset: HashSet<RepoPath>,
+    pending_scroll: Option<PathKey>,
+    review_comment_count: usize,
+    empty_label: SharedString,
     _task: Task<Result<()>>,
     _subscription: Subscription,
 }
@@ -178,14 +178,14 @@ impl DiffMultibuffer {
             workspace: workspace.downgrade(),
             branch_diff,
             focus_handle,
+            showing_full_file: false,
+            excerpts_to_reset: HashSet::default(),
             editor,
             multibuffer,
             buffer_subscriptions: Default::default(),
             pending_scroll: None,
             review_comment_count: 0,
             empty_label: empty_label.into(),
-            showing_full_file: false,
-            excerpts_to_reset: HashSet::default(),
             _task: task,
             _subscription: Subscription::join(
                 branch_diff_subscription,
