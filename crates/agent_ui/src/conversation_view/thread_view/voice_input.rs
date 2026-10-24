@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use agent_settings::{SpeechToTextSettings, SpeechToTextTriggerMode};
 use anyhow::Context as _;
@@ -288,13 +288,8 @@ fn parse_transcription_response(body: &str) -> anyhow::Result<String> {
     Ok(response.text.trim().to_string())
 }
 
-async fn transcribe_recording(
-    http_client: Arc<dyn HttpClient>,
-    settings: SpeechToTextSettings,
-    audio_path: PathBuf,
-) -> anyhow::Result<String> {
-    let wav_bytes = smol::fs::read(&audio_path).await;
-    smol::fs::remove_file(&audio_path)
+async fn remove_voice_recording(audio_path: &Path) {
+    smol::fs::remove_file(audio_path)
         .await
         .with_context(|| {
             format!(
@@ -303,6 +298,15 @@ async fn transcribe_recording(
             )
         })
         .log_err();
+}
+
+async fn transcribe_recording(
+    http_client: Arc<dyn HttpClient>,
+    settings: SpeechToTextSettings,
+    audio_path: PathBuf,
+) -> anyhow::Result<String> {
+    let wav_bytes = smol::fs::read(&audio_path).await;
+    remove_voice_recording(&audio_path).await;
     let wav_bytes = wav_bytes
         .with_context(|| format!("failed to read voice recording {}", audio_path.display()))?;
 
@@ -376,8 +380,8 @@ impl ThreadView {
             VoiceRecordingState::Recording { capture_input } => {
                 self.finish_voice_recording(capture_input, window, cx);
             }
-            VoiceRecordingState::SavingAudio | VoiceRecordingState::Transcribing => {
-                self.voice_recording_state = VoiceRecordingState::Transcribing;
+            processing @ (VoiceRecordingState::SavingAudio | VoiceRecordingState::Transcribing) => {
+                self.voice_recording_state = processing;
             }
         }
     }
@@ -438,18 +442,27 @@ impl ThreadView {
 
         cx.spawn_in(window, async move |this, cx| {
             let save_result = cx
-                .background_spawn(async move { capture_input.finish_to_path(save_path) })
+                .background_spawn({
+                    let save_path = save_path.clone();
+                    async move { capture_input.finish_to_path(save_path) }
+                })
                 .await;
 
             let saved_path = match save_result {
                 Ok(saved_path) => {
-                    this.update_in(cx, |this, _window, cx| {
+                    if let Err(error) = this.update_in(cx, |this, _window, cx| {
                         this.voice_recording_state = VoiceRecordingState::Transcribing;
                         cx.notify();
-                    })?;
+                    }) {
+                        remove_voice_recording(&saved_path).await;
+                        return Err(error);
+                    }
                     saved_path
                 }
                 Err(error) => {
+                    if save_path.exists() {
+                        remove_voice_recording(&save_path).await;
+                    }
                     this.update_in(cx, |this, _window, cx| {
                         this.voice_recording_state = VoiceRecordingState::Idle;
                         this.show_voice_recording_error(
@@ -931,6 +944,19 @@ mod tests {
             message.contains("Is the transcription server running"),
             "{message}"
         );
+        assert!(!audio_path.exists());
+    }
+
+    #[gpui::test]
+    async fn test_remove_voice_recording(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let directory = tempfile::tempdir().unwrap();
+        let audio_path = write_recording(&directory);
+
+        remove_voice_recording(&audio_path).await;
+        assert!(!audio_path.exists());
+
+        remove_voice_recording(&audio_path).await;
         assert!(!audio_path.exists());
     }
 
