@@ -1274,6 +1274,7 @@ async fn test_restore_serialized_archive_view_does_not_panic(cx: &mut TestAppCon
         width: Some(400.0),
         width_set_by_user: true,
         active_view: SerializedSidebarView::History,
+        show_recent_only: false,
     })
     .expect("serialization should succeed");
 
@@ -16539,6 +16540,546 @@ fn test_group_by_worktree_sorts_empty_draft_worktree_first() {
         vec![
             PathList::new(&[PathBuf::from("/wt/oak")]),
             PathList::new(&[PathBuf::from("/wt/rosewood")]),
+        ]
+    );
+}
+
+fn hours_ago(hours: i64) -> DateTime<Utc> {
+    Utc::now() - chrono::Duration::hours(hours)
+}
+
+fn toggle_recent_threads(sidebar: &Entity<Sidebar>, cx: &mut gpui::VisualTestContext) {
+    sidebar.update_in(cx, |sidebar, window, cx| {
+        sidebar.toggle_recent_threads(&ToggleRecentThreads, window, cx);
+    });
+    cx.run_until_parked();
+}
+
+fn filter_placeholder(
+    sidebar: &Entity<Sidebar>,
+    cx: &mut gpui::VisualTestContext,
+) -> Option<String> {
+    sidebar.update(cx, |sidebar, cx| {
+        sidebar
+            .filter_editor
+            .update(cx, |editor, cx| editor.placeholder_text(cx))
+    })
+}
+
+fn save_recent_and_old_threads(paths: &PathList, cx: &mut TestAppContext) {
+    save_thread_metadata_with_main_paths(
+        "recent-thread",
+        "Recent Thread",
+        paths.clone(),
+        paths.clone(),
+        hours_ago(1),
+        cx,
+    );
+    save_thread_metadata_with_main_paths(
+        "old-thread",
+        "Old Thread",
+        paths.clone(),
+        paths.clone(),
+        hours_ago(72),
+        cx,
+    );
+}
+
+#[gpui::test]
+async fn test_recent_threads_off_by_default(cx: &mut TestAppContext) {
+    let project = init_test_project("/my-project", cx).await;
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let sidebar = setup_sidebar(&multi_workspace, cx);
+
+    save_recent_and_old_threads(&PathList::new(&[PathBuf::from("/my-project")]), cx);
+    multi_workspace.update_in(cx, |_, _window, cx| cx.notify());
+    cx.run_until_parked();
+
+    assert!(!sidebar.read_with(cx, |sidebar, _| sidebar.show_recent_only));
+    assert_eq!(
+        visible_entries_as_strings(&sidebar, cx),
+        vec![
+            //
+            "v [my-project]",
+            "  Recent Thread",
+            "  Old Thread",
+        ]
+    );
+}
+
+#[gpui::test]
+async fn test_recent_threads_hides_threads_outside_window(cx: &mut TestAppContext) {
+    let project = init_test_project("/my-project", cx).await;
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let sidebar = setup_sidebar(&multi_workspace, cx);
+
+    save_recent_and_old_threads(&PathList::new(&[PathBuf::from("/my-project")]), cx);
+    multi_workspace.update_in(cx, |_, _window, cx| cx.notify());
+    cx.run_until_parked();
+
+    toggle_recent_threads(&sidebar, cx);
+    assert_eq!(
+        visible_entries_as_strings(&sidebar, cx),
+        vec![
+            //
+            "v [my-project]",
+            "  Recent Thread",
+        ]
+    );
+    assert_eq!(
+        filter_placeholder(&sidebar, cx),
+        Some("Search threads… (last 24h)".to_string())
+    );
+
+    cx.update(|_window, cx| {
+        SettingsStore::update_global(cx, |store, cx| {
+            store
+                .set_user_settings(
+                    r#"{"agent": {"threads_sidebar": {"recent_hours": 100}}}"#,
+                    cx,
+                )
+                .unwrap();
+        });
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        visible_entries_as_strings(&sidebar, cx),
+        vec![
+            //
+            "v [my-project]",
+            "  Recent Thread",
+            "  Old Thread",
+        ]
+    );
+    assert_eq!(
+        filter_placeholder(&sidebar, cx),
+        Some("Search threads… (last 100h)".to_string())
+    );
+
+    cx.update(|_window, cx| {
+        SettingsStore::update_global(cx, |store, cx| {
+            store.set_user_settings("{}", cx).unwrap();
+        });
+    });
+    toggle_recent_threads(&sidebar, cx);
+    assert_eq!(
+        visible_entries_as_strings(&sidebar, cx),
+        vec![
+            //
+            "v [my-project]",
+            "  Recent Thread",
+            "  Old Thread",
+        ]
+    );
+    assert_eq!(
+        filter_placeholder(&sidebar, cx),
+        Some("Search threads…".to_string())
+    );
+}
+
+#[gpui::test]
+async fn test_recent_threads_keeps_running_and_active_threads(cx: &mut TestAppContext) {
+    let project = init_test_project_with_agent_panel("/my-project", cx).await;
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let (sidebar, panel) = setup_sidebar_with_agent_panel(&multi_workspace, cx);
+
+    let connection = StubAgentConnection::new();
+    open_thread_with_connection(&panel, connection.clone(), cx);
+    send_message(&panel, cx);
+    let running_session_id = active_session_id(&panel, cx);
+    save_test_thread_metadata(&running_session_id, &project, cx).await;
+    cx.update(|_, cx| {
+        connection.send_update(
+            running_session_id.clone(),
+            acp_v1::SessionUpdate::AgentMessageChunk(acp_v1::ContentChunk::new(
+                "working...".into(),
+            )),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+
+    connection.set_next_prompt_updates(vec![acp_v1::SessionUpdate::AgentMessageChunk(
+        acp_v1::ContentChunk::new("Done".into()),
+    )]);
+    open_thread_with_connection(&panel, connection, cx);
+    send_message(&panel, cx);
+    let active_session_id = active_session_id(&panel, cx);
+    save_test_thread_metadata(&active_session_id, &project, cx).await;
+
+    let paths = PathList::new(&[PathBuf::from("/my-project")]);
+    save_thread_metadata_with_main_paths(
+        "old-thread",
+        "Old Thread",
+        paths.clone(),
+        paths,
+        hours_ago(72),
+        cx,
+    );
+    cx.run_until_parked();
+
+    toggle_recent_threads(&sidebar, cx);
+    let mut entries = visible_entries_as_strings(&sidebar, cx);
+    entries[1..].sort();
+    assert_eq!(
+        entries,
+        vec![
+            //
+            "v [my-project]",
+            "  Hello *",
+            "  Hello * (running)",
+        ]
+    );
+}
+
+#[gpui::test]
+async fn test_recent_threads_keeps_waiting_unread_and_draft_threads(cx: &mut TestAppContext) {
+    let project = init_test_project("/my-project", cx).await;
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let sidebar = setup_sidebar(&multi_workspace, cx);
+    let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+
+    let thread_entry = |status: AgentThreadStatus| ThreadEntry {
+        metadata: ThreadMetadata {
+            thread_id: ThreadId::new(),
+            session_id: None,
+            agent_id: AgentId::new("zed-agent"),
+            worktree_paths: WorktreePaths::default(),
+            title: Some("Old Thread".into()),
+            title_override: None,
+            updated_at: hours_ago(72),
+            created_at: None,
+            interacted_at: None,
+            archived: false,
+            remote_connection: None,
+        },
+        icon: IconName::ZedAgent,
+        icon_from_external_svg: None,
+        status,
+        workspace: ThreadEntryWorkspace::Open(workspace.clone()),
+        is_live: false,
+        is_background: false,
+        is_title_generating: false,
+        draft: None,
+        highlight_positions: Vec::new(),
+        worktrees: Vec::new(),
+        diff_stats: DiffStats::default(),
+    };
+
+    sidebar.read_with(cx, |sidebar, _| {
+        let no_notifications = HashSet::default();
+        let idle = thread_entry(AgentThreadStatus::Completed);
+        assert!(!sidebar.is_sticky_thread(&idle, &no_notifications));
+        assert!(sidebar.is_sticky_thread(
+            &thread_entry(AgentThreadStatus::WaitingForConfirmation),
+            &no_notifications
+        ));
+        assert!(
+            sidebar.is_sticky_thread(&thread_entry(AgentThreadStatus::Running), &no_notifications)
+        );
+        assert!(sidebar.is_sticky_thread(
+            &ThreadEntry {
+                draft: Some(DraftKind::WithContent),
+                ..thread_entry(AgentThreadStatus::Completed)
+            },
+            &no_notifications
+        ));
+        assert!(sidebar.is_sticky_thread(&idle, &HashSet::from_iter([idle.metadata.thread_id])));
+    });
+
+    let paths = PathList::new(&[PathBuf::from("/my-project")]);
+    save_recent_and_old_threads(&paths, cx);
+    multi_workspace.update_in(cx, |_, _window, cx| cx.notify());
+    cx.run_until_parked();
+    let old_thread_id = cx.update(|_, cx| {
+        ThreadMetadataStore::global(cx)
+            .read(cx)
+            .entry_by_session(&acp::SessionId::new(Arc::from("old-thread")))
+            .map(|metadata| metadata.thread_id)
+            .unwrap()
+    });
+    sidebar.update_in(cx, |sidebar, window, cx| {
+        sidebar.contents.notified_threads.insert(old_thread_id);
+        sidebar.toggle_recent_threads(&ToggleRecentThreads, window, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        visible_entries_as_strings(&sidebar, cx),
+        vec![
+            //
+            "v [my-project]",
+            "  Recent Thread",
+            "  Old Thread (!)",
+        ]
+    );
+}
+
+#[gpui::test]
+async fn test_recent_threads_hides_groups_without_recent_rows(cx: &mut TestAppContext) {
+    use workspace::ProjectGroup;
+
+    let project = init_test_project("/my-project", cx).await;
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let sidebar = setup_sidebar(&multi_workspace, cx);
+
+    let other_paths = PathList::new(&[PathBuf::from("/other-project")]);
+    multi_workspace.update(cx, |multi_workspace, _cx| {
+        multi_workspace.test_add_project_group(ProjectGroup {
+            key: ProjectGroupKey::new(None, other_paths.clone()),
+            workspaces: Vec::new(),
+            expanded: true,
+        });
+    });
+    let my_paths = PathList::new(&[PathBuf::from("/my-project")]);
+    save_thread_metadata_with_main_paths(
+        "my-old-thread",
+        "My Old Thread",
+        my_paths.clone(),
+        my_paths,
+        hours_ago(72),
+        cx,
+    );
+    save_thread_metadata_with_main_paths(
+        "other-old-thread",
+        "Other Old Thread",
+        other_paths.clone(),
+        other_paths.clone(),
+        hours_ago(72),
+        cx,
+    );
+    multi_workspace.update_in(cx, |_, _window, cx| cx.notify());
+    cx.run_until_parked();
+
+    toggle_recent_threads(&sidebar, cx);
+    // The active project keeps its header even with nothing recent.
+    assert_eq!(
+        visible_entries_as_strings(&sidebar, cx),
+        vec!["v [my-project]"]
+    );
+
+    save_thread_metadata_with_main_paths(
+        "other-recent-thread",
+        "Other Recent Thread",
+        other_paths.clone(),
+        other_paths,
+        hours_ago(1),
+        cx,
+    );
+    cx.run_until_parked();
+    assert_eq!(
+        visible_entries_as_strings(&sidebar, cx),
+        vec![
+            //
+            "v [my-project]",
+            "v [other-project]",
+            "  Other Recent Thread",
+        ]
+    );
+}
+
+#[gpui::test]
+async fn test_recent_threads_preserves_state_of_hidden_threads(cx: &mut TestAppContext) {
+    let project = init_test_project("/my-project", cx).await;
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let sidebar = setup_sidebar(&multi_workspace, cx);
+
+    save_recent_and_old_threads(&PathList::new(&[PathBuf::from("/my-project")]), cx);
+    multi_workspace.update_in(cx, |_, _window, cx| cx.notify());
+    cx.run_until_parked();
+    let old_thread_id = cx.update(|_, cx| {
+        ThreadMetadataStore::global(cx)
+            .read(cx)
+            .entry_by_session(&acp::SessionId::new(Arc::from("old-thread")))
+            .map(|metadata| metadata.thread_id)
+            .unwrap()
+    });
+    let last_accessed = Utc::now();
+    sidebar.update(cx, |sidebar, _cx| {
+        sidebar
+            .thread_last_accessed
+            .insert(old_thread_id, last_accessed);
+    });
+
+    toggle_recent_threads(&sidebar, cx);
+    sidebar.update(cx, |sidebar, cx| sidebar.update_entries(cx));
+    cx.run_until_parked();
+    assert_eq!(
+        visible_entries_as_strings(&sidebar, cx),
+        vec![
+            //
+            "v [my-project]",
+            "  Recent Thread",
+        ]
+    );
+
+    sidebar.read_with(cx, |sidebar, cx| {
+        assert_eq!(
+            sidebar.thread_last_accessed.get(&old_thread_id),
+            Some(&last_accessed),
+            "rebuilding should keep the access time of a hidden thread"
+        );
+        let switcher_titles: Vec<_> = sidebar
+            .mru_entries_for_switcher(cx)
+            .iter()
+            .map(|entry| match entry {
+                ThreadSwitcherEntry::Thread(thread) => thread.title.to_string(),
+                ThreadSwitcherEntry::Terminal(terminal) => {
+                    terminal.metadata.display_title().to_string()
+                }
+            })
+            .collect();
+        assert_eq!(
+            switcher_titles,
+            vec!["Old Thread", "Recent Thread"],
+            "the thread switcher should still list hidden threads"
+        );
+    });
+}
+
+#[gpui::test]
+async fn test_recent_threads_search_ignores_window(cx: &mut TestAppContext) {
+    let project = init_test_project("/my-project", cx).await;
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let sidebar = setup_sidebar(&multi_workspace, cx);
+
+    save_recent_and_old_threads(&PathList::new(&[PathBuf::from("/my-project")]), cx);
+    multi_workspace.update_in(cx, |_, _window, cx| cx.notify());
+    cx.run_until_parked();
+
+    toggle_recent_threads(&sidebar, cx);
+    type_in_search(&sidebar, "thread", cx);
+    assert_eq!(
+        visible_entries_as_strings(&sidebar, cx),
+        vec![
+            //
+            "v [my-project]",
+            "  Recent Thread  <== selected",
+            "  Old Thread",
+        ]
+    );
+
+    type_in_search(&sidebar, "", cx);
+    assert_eq!(
+        visible_entries_as_strings(&sidebar, cx),
+        vec![
+            //
+            "v [my-project]",
+            "  Recent Thread  <== selected",
+        ]
+    );
+}
+
+#[gpui::test]
+async fn test_recent_threads_toggle_is_persisted(cx: &mut TestAppContext) {
+    let project = init_test_project("/my-project", cx).await;
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let sidebar = setup_sidebar(&multi_workspace, cx);
+
+    save_recent_and_old_threads(&PathList::new(&[PathBuf::from("/my-project")]), cx);
+    multi_workspace.update_in(cx, |_, _window, cx| cx.notify());
+    cx.run_until_parked();
+
+    toggle_recent_threads(&sidebar, cx);
+    let serialized = sidebar
+        .read_with(cx, |sidebar, cx| sidebar.serialized_state(cx))
+        .expect("serialized_state should return Some");
+
+    toggle_recent_threads(&sidebar, cx);
+    assert_eq!(visible_entries_as_strings(&sidebar, cx).len(), 3);
+
+    sidebar.update_in(cx, |sidebar, window, cx| {
+        sidebar.restore_serialized_state(&serialized, window, cx);
+    });
+    cx.run_until_parked();
+    assert!(sidebar.read_with(cx, |sidebar, _| sidebar.show_recent_only));
+    assert_eq!(
+        visible_entries_as_strings(&sidebar, cx),
+        vec![
+            //
+            "v [my-project]",
+            "  Recent Thread",
+        ]
+    );
+
+    // State saved before the toggle existed still loads.
+    sidebar.update_in(cx, |sidebar, window, cx| {
+        sidebar.restore_serialized_state(r#"{"width":null}"#, window, cx);
+    });
+    cx.run_until_parked();
+    assert!(!sidebar.read_with(cx, |sidebar, _| sidebar.show_recent_only));
+}
+
+#[gpui::test]
+async fn test_recent_threads_with_group_by_worktree(cx: &mut TestAppContext) {
+    let (project, fs) = init_test_project_with_git("/project", cx).await;
+    fs.as_fake()
+        .add_linked_worktree_for_repo(
+            Path::new("/project/.git"),
+            false,
+            git::repository::Worktree {
+                path: PathBuf::from("/wt/oak"),
+                ref_name: Some("refs/heads/oak-branch".into()),
+                sha: "abc".into(),
+                is_main: false,
+                is_bare: false,
+            },
+        )
+        .await;
+    project
+        .update(cx, |project, cx| project.git_scans_complete(cx))
+        .await;
+
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let sidebar = setup_sidebar(&multi_workspace, cx);
+    cx.update(|_window, cx| set_threads_sidebar_group_by("worktree", cx));
+
+    let main_paths = PathList::new(&[PathBuf::from("/project")]);
+    save_thread_metadata_with_main_paths(
+        "main-thread",
+        "Main Thread",
+        main_paths.clone(),
+        main_paths.clone(),
+        hours_ago(2),
+        cx,
+    );
+    save_thread_metadata_with_main_paths(
+        "oak-thread",
+        "Oak Thread",
+        PathList::new(&[PathBuf::from("/wt/oak")]),
+        main_paths.clone(),
+        hours_ago(1),
+        cx,
+    );
+    save_thread_metadata_with_main_paths(
+        "rosewood-thread",
+        "Rosewood Thread",
+        PathList::new(&[PathBuf::from("/wt/rosewood")]),
+        main_paths,
+        hours_ago(72),
+        cx,
+    );
+    multi_workspace.update_in(cx, |_, _window, cx| cx.notify());
+    cx.run_until_parked();
+
+    toggle_recent_threads(&sidebar, cx);
+    assert_eq!(
+        visible_entries_as_strings(&sidebar, cx),
+        vec![
+            //
+            "v [project]",
+            "  @ project",
+            "  Main Thread",
+            "  @ oak (oak-branch)",
+            "  Oak Thread",
         ]
     );
 }

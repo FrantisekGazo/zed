@@ -258,6 +258,7 @@ pub struct ThreadsSidebarSettings {
     pub position: SidebarDockPosition,
     pub default_width: Pixels,
     pub group_by: ThreadsSidebarGroupBy,
+    pub recent_hours: u32,
 }
 
 impl AgentSettings {
@@ -787,6 +788,7 @@ impl Settings for AgentSettings {
                     .into_gpui()
                     .clamp(THREADS_LIST_MIN_WIDTH, THREADS_LIST_MAX_WIDTH),
                 group_by: threads_sidebar.group_by.unwrap(),
+                recent_hours: threads_sidebar.recent_hours.unwrap().max(1),
             },
             default_width: agent.default_width.unwrap().into_gpui(),
             default_height: agent.default_height.unwrap().into_gpui(),

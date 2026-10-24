@@ -27,6 +27,8 @@ The “Threads Sidebar Auto Open” setting controls whether opening a folder in
 
 To list the threads of each git worktree under their own heading, set [`agent.threads_sidebar.group_by`](../reference/all-settings.md#agent-threads-sidebar-group-by) to `"worktree"`.
 
+To hide threads you haven't touched lately, click the clock button next to the sidebar's search field (or run {#action agents_sidebar::ToggleRecentThreads}). The sidebar then shows only threads active in the last 24 hours, plus any thread that is running, waiting for you, unread, or has an unsent draft. Typing a search still searches every thread. Change the window with [`agent.threads_sidebar.recent_hours`](../reference/all-settings.md#agent-threads-sidebar-recent-hours).
+
 ### Switching Threads {#switching-threads}
 
 Click any thread in the sidebar to switch to it. The Agent Panel updates to show that thread's conversation.
