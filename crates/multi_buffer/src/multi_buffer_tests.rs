@@ -7297,7 +7297,7 @@ fn assert_word_diff_ranges_valid(snapshot: &MultiBufferSnapshot) -> Vec<String> 
     let text = snapshot.text();
     let ranges: Vec<_> = snapshot
         .diff_hunks()
-        .flat_map(|hunk| hunk.word_diffs)
+        .flat_map(|hunk| hunk.word_diffs.into_iter().map(|(range, _)| range))
         .collect();
 
     for range in &ranges {
