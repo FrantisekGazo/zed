@@ -21,10 +21,12 @@ use settings::{
     SettingsStore, SidebarDockPosition, SidebarSide, ThinkingBlockDisplay, ToolPermissionMode,
     update_settings_file, update_settings_file_with_completion,
 };
+use std::path::PathBuf;
 use util::ResultExt as _;
 
 pub use crate::agent_profile::*;
 pub use crate::user_agents_md::{UserAgentsMd, UserAgentsMdState, init as init_user_agents_md};
+pub use settings::settings_content::SpeechToTextTriggerMode;
 
 pub const SUMMARIZE_THREAD_PROMPT: &str = include_str!("prompts/summarize_thread_prompt.txt");
 pub const SUMMARIZE_THREAD_DETAILED_PROMPT: &str =
@@ -250,6 +252,7 @@ pub struct AgentSettings {
     pub show_merge_conflict_indicator: bool,
     pub tool_permissions: ToolPermissions,
     pub sandbox_permissions: SandboxPermissions,
+    pub speech_to_text: SpeechToTextSettings,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -400,6 +403,14 @@ impl AgentSettings {
             }
         }
     }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SpeechToTextSettings {
+    pub enabled: bool,
+    pub whisper_cpp_executable_path: Option<PathBuf>,
+    pub whisper_cpp_model_path: Option<PathBuf>,
+    pub trigger_mode: SpeechToTextTriggerMode,
 }
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Serialize, Deserialize, JsonSchema)]
@@ -846,6 +857,26 @@ impl Settings for AgentSettings {
             show_merge_conflict_indicator: agent.show_merge_conflict_indicator.unwrap(),
             tool_permissions: compile_tool_permissions(agent.tool_permissions),
             sandbox_permissions: compile_sandbox_permissions(agent.sandbox_permissions),
+            speech_to_text: SpeechToTextSettings {
+                enabled: agent
+                    .speech_to_text
+                    .as_ref()
+                    .and_then(|speech_to_text| speech_to_text.enabled)
+                    .unwrap_or(false),
+                whisper_cpp_executable_path: agent
+                    .speech_to_text
+                    .as_ref()
+                    .and_then(|speech_to_text| speech_to_text.whisper_cpp_executable_path.clone()),
+                whisper_cpp_model_path: agent
+                    .speech_to_text
+                    .as_ref()
+                    .and_then(|speech_to_text| speech_to_text.whisper_cpp_model_path.clone()),
+                trigger_mode: agent
+                    .speech_to_text
+                    .as_ref()
+                    .and_then(|speech_to_text| speech_to_text.trigger_mode)
+                    .unwrap_or_default(),
+            },
         }
     }
 }

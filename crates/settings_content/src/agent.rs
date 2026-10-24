@@ -405,6 +405,8 @@ pub struct AgentSettingsContent {
     /// `always_confirm`) match against the tool's text input (command, path,
     /// URL, etc.).
     pub tool_permissions: Option<ToolPermissionsContent>,
+    /// Local speech-to-text settings for voice input in the agent panel.
+    pub speech_to_text: Option<SpeechToTextContent>,
 
     /// Persistent sandbox permission grants for agent-run terminal commands.
     /// These are populated when choosing "Allow always" from a sandbox
@@ -455,6 +457,14 @@ impl AgentSettingsContent {
 
     pub fn set_profile(&mut self, profile_id: Arc<str>) {
         self.default_profile = Some(profile_id);
+    }
+
+    pub fn set_speech_to_text_enabled(&mut self, enabled: bool) {
+        self.speech_to_text.get_or_insert_default().enabled = Some(enabled);
+    }
+
+    pub fn set_speech_to_text_trigger_mode(&mut self, trigger_mode: SpeechToTextTriggerMode) {
+        self.speech_to_text.get_or_insert_default().trigger_mode = Some(trigger_mode);
     }
 
     pub fn add_favorite_model(&mut self, model: LanguageModelSelection) {
@@ -584,6 +594,46 @@ impl AgentSettingsContent {
         write_paths.retain(|existing| !existing.canonical_or_requested().starts_with(&canonical));
         write_paths.push(granted);
     }
+}
+
+#[with_fallible_options]
+#[derive(Clone, PartialEq, Serialize, Deserialize, JsonSchema, MergeFrom, Debug, Default)]
+pub struct SpeechToTextContent {
+    /// Whether voice input controls should be shown in the agent panel.
+    ///
+    /// Default: false
+    pub enabled: Option<bool>,
+    /// Path to the whisper.cpp executable to run for transcription.
+    pub whisper_cpp_executable_path: Option<PathBuf>,
+    /// Path to the whisper.cpp model file to use for transcription.
+    pub whisper_cpp_model_path: Option<PathBuf>,
+    /// Whether the microphone button toggles recording or records only while held.
+    ///
+    /// Default: "toggle"
+    pub trigger_mode: Option<SpeechToTextTriggerMode>,
+}
+
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    MergeFrom,
+    strum::VariantArray,
+    strum::VariantNames,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum SpeechToTextTriggerMode {
+    /// Click once to start recording and click again to stop.
+    #[default]
+    Toggle,
+    /// Record only while the microphone button is held down.
+    Hold,
 }
 
 #[with_fallible_options]
