@@ -21,12 +21,14 @@ use settings::{
     SettingsStore, SidebarDockPosition, SidebarSide, ThinkingBlockDisplay, ToolPermissionMode,
     update_settings_file, update_settings_file_with_completion,
 };
-use std::path::PathBuf;
 use util::ResultExt as _;
 
 pub use crate::agent_profile::*;
 pub use crate::user_agents_md::{UserAgentsMd, UserAgentsMdState, init as init_user_agents_md};
 pub use settings::settings_content::SpeechToTextTriggerMode;
+
+pub const DEFAULT_SPEECH_TO_TEXT_API_URL: &str = "http://localhost:8010/v1";
+pub const DEFAULT_SPEECH_TO_TEXT_MODEL: &str = "phonon-2.5-en";
 
 pub const SUMMARIZE_THREAD_PROMPT: &str = include_str!("prompts/summarize_thread_prompt.txt");
 pub const SUMMARIZE_THREAD_DETAILED_PROMPT: &str =
@@ -405,12 +407,39 @@ impl AgentSettings {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct SpeechToTextSettings {
     pub enabled: bool,
-    pub whisper_cpp_executable_path: Option<PathBuf>,
-    pub whisper_cpp_model_path: Option<PathBuf>,
+    pub api_url: String,
+    pub model: String,
+    pub api_key: Option<String>,
     pub trigger_mode: SpeechToTextTriggerMode,
+}
+
+impl Default for SpeechToTextSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            api_url: DEFAULT_SPEECH_TO_TEXT_API_URL.to_string(),
+            model: DEFAULT_SPEECH_TO_TEXT_MODEL.to_string(),
+            api_key: None,
+            trigger_mode: SpeechToTextTriggerMode::default(),
+        }
+    }
+}
+
+impl SpeechToTextSettings {
+    fn from_content(content: Option<settings::SpeechToTextContent>) -> Self {
+        let content = content.unwrap_or_default();
+        let defaults = Self::default();
+        Self {
+            enabled: content.enabled.unwrap_or(defaults.enabled),
+            api_url: content.api_url.unwrap_or(defaults.api_url),
+            model: content.model.unwrap_or(defaults.model),
+            api_key: content.api_key.filter(|api_key| !api_key.trim().is_empty()),
+            trigger_mode: content.trigger_mode.unwrap_or(defaults.trigger_mode),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Serialize, Deserialize, JsonSchema)]
@@ -857,26 +886,7 @@ impl Settings for AgentSettings {
             show_merge_conflict_indicator: agent.show_merge_conflict_indicator.unwrap(),
             tool_permissions: compile_tool_permissions(agent.tool_permissions),
             sandbox_permissions: compile_sandbox_permissions(agent.sandbox_permissions),
-            speech_to_text: SpeechToTextSettings {
-                enabled: agent
-                    .speech_to_text
-                    .as_ref()
-                    .and_then(|speech_to_text| speech_to_text.enabled)
-                    .unwrap_or(false),
-                whisper_cpp_executable_path: agent
-                    .speech_to_text
-                    .as_ref()
-                    .and_then(|speech_to_text| speech_to_text.whisper_cpp_executable_path.clone()),
-                whisper_cpp_model_path: agent
-                    .speech_to_text
-                    .as_ref()
-                    .and_then(|speech_to_text| speech_to_text.whisper_cpp_model_path.clone()),
-                trigger_mode: agent
-                    .speech_to_text
-                    .as_ref()
-                    .and_then(|speech_to_text| speech_to_text.trigger_mode)
-                    .unwrap_or_default(),
-            },
+            speech_to_text: SpeechToTextSettings::from_content(agent.speech_to_text),
         }
     }
 }

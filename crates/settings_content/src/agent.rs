@@ -603,10 +603,17 @@ pub struct SpeechToTextContent {
     ///
     /// Default: false
     pub enabled: Option<bool>,
-    /// Path to the whisper.cpp executable to run for transcription.
-    pub whisper_cpp_executable_path: Option<PathBuf>,
-    /// Path to the whisper.cpp model file to use for transcription.
-    pub whisper_cpp_model_path: Option<PathBuf>,
+    /// Base URL of an OpenAI-compatible transcription API. Recordings are sent
+    /// to `{api_url}/audio/transcriptions`.
+    ///
+    /// Default: "http://localhost:8010/v1"
+    pub api_url: Option<String>,
+    /// Model name sent with each transcription request.
+    ///
+    /// Default: "phonon-2.5-en"
+    pub model: Option<String>,
+    /// API key sent as a bearer token. Omit it for servers that don't need one.
+    pub api_key: Option<String>,
     /// Whether the microphone button toggles recording or records only while held.
     ///
     /// Default: "toggle"

@@ -22,7 +22,7 @@ test-support = [
     "workspace/test-support",
     "agent/test-support",
 ]
-audio = ["dep:audio", "dep:livekit_client"]
+audio = ["dep:audio", "dep:livekit_client", "dep:smol"]
 unit-eval = []
 
 [dependencies]
@@ -99,6 +99,7 @@ search.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_json_lenient.workspace = true
+smol = { workspace = true, optional = true }
 settings.workspace = true
 streaming_diff.workspace = true
 task.workspace = true
@@ -116,7 +117,6 @@ util.workspace = true
 uuid.workspace = true
 watch.workspace = true
 workspace.workspace = true
-which.workspace = true
 git_ui_core.workspace = true
 zed_actions.workspace = true
 image.workspace = true

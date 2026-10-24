@@ -536,6 +536,7 @@ dependencies = [
  "serde_json_lenient",
  "settings",
  "shlex 2.0.1",
+ "smol",
  "streaming_diff",
  "task",
  "telemetry",
@@ -553,7 +554,6 @@ dependencies = [
  "uuid",
  "vim",
  "watch",
- "which",
  "workspace",
  "zed_actions",
 ]
