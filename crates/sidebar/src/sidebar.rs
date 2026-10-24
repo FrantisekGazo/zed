@@ -8435,7 +8435,9 @@ impl WorkspaceSidebar for Sidebar {
             if serialized.show_recent_only != self.show_recent_only {
                 self.show_recent_only = serialized.show_recent_only;
                 self.update_filter_placeholder(window, cx);
-                self.update_entries(cx);
+                // Restoring runs inside a `MultiWorkspace` update, which
+                // rebuilding reads, so the rebuild has to wait.
+                self.schedule_update_entries(false, cx);
             }
             if serialized.active_view == SerializedSidebarView::History {
                 cx.defer_in(window, |this, window, cx| {

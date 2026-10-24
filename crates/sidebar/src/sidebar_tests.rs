@@ -16995,8 +16995,11 @@ async fn test_recent_threads_toggle_is_persisted(cx: &mut TestAppContext) {
     toggle_recent_threads(&sidebar, cx);
     assert_eq!(visible_entries_as_strings(&sidebar, cx).len(), 3);
 
-    sidebar.update_in(cx, |sidebar, window, cx| {
-        sidebar.restore_serialized_state(&serialized, window, cx);
+    // Restore the way workspace startup does, from inside a `MultiWorkspace` update.
+    multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+        if let Some(sidebar) = multi_workspace.sidebar() {
+            sidebar.restore_serialized_state(&serialized, window, cx);
+        }
     });
     cx.run_until_parked();
     assert!(sidebar.read_with(cx, |sidebar, _| sidebar.show_recent_only));
@@ -17010,8 +17013,10 @@ async fn test_recent_threads_toggle_is_persisted(cx: &mut TestAppContext) {
     );
 
     // State saved before the toggle existed still loads.
-    sidebar.update_in(cx, |sidebar, window, cx| {
-        sidebar.restore_serialized_state(r#"{"width":null}"#, window, cx);
+    multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+        if let Some(sidebar) = multi_workspace.sidebar() {
+            sidebar.restore_serialized_state(r#"{"width":null}"#, window, cx);
+        }
     });
     cx.run_until_parked();
     assert!(!sidebar.read_with(cx, |sidebar, _| sidebar.show_recent_only));
