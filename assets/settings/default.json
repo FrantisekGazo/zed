@@ -1197,6 +1197,8 @@
       "auto_open": true,
       // How to group threads in the Threads Sidebar. Can be 'project' or 'worktree'.
       "group_by": "project",
+      // How many hours back the Threads Sidebar's "Recent" filter reaches.
+      "recent_hours": 24,
     },
     // Default fixed width when the agent panel is docked to the left or right and
     // `flexible` is false.

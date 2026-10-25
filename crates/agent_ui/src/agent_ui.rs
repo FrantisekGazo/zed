@@ -1112,6 +1112,7 @@ mod tests {
                 default_width: px(300.),
                 position: settings::SidebarDockPosition::Left,
                 group_by: Default::default(),
+                recent_hours: 24,
             },
             thinking_display: Default::default(),
         };

@@ -941,6 +941,8 @@ pub mod agents_sidebar {
         [
             /// Moves focus to the sidebar's search/filter editor.
             FocusSidebarFilter,
+            /// Toggles between showing all threads and only recently active threads.
+            ToggleRecentThreads,
         ]
     );
 }

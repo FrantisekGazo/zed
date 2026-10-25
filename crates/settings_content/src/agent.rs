@@ -86,6 +86,11 @@ pub struct ThreadsSidebarSettingsContent {
     ///
     /// Default: project
     pub group_by: Option<ThreadsSidebarGroupBy>,
+    /// How many hours back the threads sidebar's "Recent" filter reaches.
+    ///
+    /// Default: 24
+    #[schemars(range(min = 1))]
+    pub recent_hours: Option<u32>,
 }
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
@@ -461,6 +466,10 @@ impl AgentSettingsContent {
 
     pub fn set_threads_sidebar_group_by(&mut self, group_by: Option<ThreadsSidebarGroupBy>) {
         self.threads_sidebar.get_or_insert_default().group_by = group_by;
+    }
+
+    pub fn set_threads_sidebar_recent_hours(&mut self, recent_hours: Option<u32>) {
+        self.threads_sidebar.get_or_insert_default().recent_hours = recent_hours;
     }
 
     pub fn set_threads_sidebar_auto_open(&mut self, auto_open: Option<bool>) {

@@ -76,7 +76,7 @@ use git_ui_core::worktree_service::{RemoteBranchName, worktree_create_targets};
 use zed_actions::editor::{MoveDown, MoveUp};
 use zed_actions::{CreateWorktree, NewWorktreeBranchTarget, OpenRecent};
 
-use zed_actions::agents_sidebar::{FocusSidebarFilter, ToggleThreadSwitcher};
+use zed_actions::agents_sidebar::{FocusSidebarFilter, ToggleRecentThreads, ToggleThreadSwitcher};
 
 use crate::thread_switcher::{
     ThreadSwitcher, ThreadSwitcherEntry, ThreadSwitcherEvent, ThreadSwitcherSelection,
@@ -131,6 +131,8 @@ struct SerializedSidebar {
     width_set_by_user: bool,
     #[serde(default)]
     active_view: SerializedSidebarView,
+    #[serde(default)]
+    show_recent_only: bool,
 }
 
 #[derive(Debug, Default)]
@@ -513,6 +515,9 @@ impl From<TerminalEntry> for ListEntry {
 #[derive(Default)]
 struct SidebarContents {
     entries: Vec<ListEntry>,
+    /// Rows left out by the "Recent" filter, each group's rows preceded by its
+    /// header, so that the thread switcher can still list them.
+    entries_hidden_by_recent_filter: Vec<ListEntry>,
     notified_threads: HashSet<agent_ui::ThreadId>,
     notified_terminals: HashSet<TerminalId>,
     project_header_indices: Vec<usize>,
@@ -805,6 +810,8 @@ pub struct Sidebar {
     selection: Option<usize>,
     /// Tracks which sidebar entry is currently active (highlighted).
     active_entry: Option<ActiveEntry>,
+    /// Whether to list only threads active within `agent.threads_sidebar.recent_hours`.
+    show_recent_only: bool,
     hovered_thread_index: Option<usize>,
     rename_target: Option<RenameTarget>,
     /// Threads in the database-backed regeneration path need their own loading
@@ -866,7 +873,8 @@ impl Sidebar {
         let mut previous_default_width =
             AgentSettings::get_global(cx).threads_sidebar.default_width;
         let mut previous_group_by = AgentSettings::get_global(cx).threads_sidebar.group_by;
-        cx.observe_global::<SettingsStore>(move |this, cx| {
+        let mut previous_recent_hours = AgentSettings::get_global(cx).threads_sidebar.recent_hours;
+        cx.observe_global_in::<SettingsStore>(window, move |this, window, cx| {
             let width = AgentSettings::get_global(cx).threads_sidebar.default_width;
             if previous_default_width != width {
                 previous_default_width = width;
@@ -876,6 +884,12 @@ impl Sidebar {
             let group_by = AgentSettings::get_global(cx).threads_sidebar.group_by;
             if previous_group_by != group_by {
                 previous_group_by = group_by;
+                this.update_entries(cx);
+            }
+            let recent_hours = AgentSettings::get_global(cx).threads_sidebar.recent_hours;
+            if previous_recent_hours != recent_hours {
+                previous_recent_hours = recent_hours;
+                this.update_filter_placeholder(window, cx);
                 this.update_entries(cx);
             }
         })
@@ -975,6 +989,7 @@ impl Sidebar {
             contents: SidebarContents::default(),
             selection: None,
             active_entry: None,
+            show_recent_only: false,
             hovered_thread_index: None,
             rename_target: None,
             regenerating_titles: HashSet::new(),
@@ -1445,13 +1460,18 @@ impl Sidebar {
             .map(|ws| ws.read(cx).project().read(cx).agent_server_store().clone());
 
         let query = self.filter_editor.read(cx).text(cx);
-        let group_by = AgentSettings::get_global(cx).threads_sidebar.group_by;
+        let threads_sidebar_settings = &AgentSettings::get_global(cx).threads_sidebar;
+        let group_by = threads_sidebar_settings.group_by;
+        let recent_cutoff = (self.show_recent_only && query.is_empty()).then(|| {
+            Utc::now() - chrono::Duration::hours(i64::from(threads_sidebar_settings.recent_hours))
+        });
 
         let previous = mem::take(&mut self.contents);
 
         let old_statuses = &self.live_thread_statuses;
 
         let mut entries = Vec::new();
+        let mut entries_hidden_by_recent_filter = Vec::new();
         let mut notified_threads = previous.notified_threads;
         let mut notified_terminals: HashSet<TerminalId> = HashSet::new();
         let mut new_live_statuses: HashMap<acp::SessionId, (AgentThreadStatus, ThreadId)> =
@@ -2025,6 +2045,52 @@ impl Sidebar {
                         .any(|t| notified_threads.contains(&t.metadata.thread_id))
                 };
 
+                if let Some(cutoff) = recent_cutoff
+                    && !is_collapsed
+                {
+                    let (recent_threads, old_threads): (Vec<_>, Vec<_>) =
+                        threads.into_iter().partition(|thread| {
+                            Self::thread_row_display_time(thread) >= cutoff
+                                || self.is_sticky_thread(thread, &notified_threads)
+                        });
+                    let (recent_terminals, old_terminals): (Vec<_>, Vec<_>) =
+                        terminals.into_iter().partition(|terminal| {
+                            terminal.metadata.created_at >= cutoff
+                                || self.is_sticky_terminal(terminal)
+                        });
+                    threads = recent_threads;
+                    terminals = recent_terminals;
+
+                    // Hidden threads must stay in `current_thread_ids`, or the
+                    // retains below drop their unread state and access times.
+                    current_thread_ids
+                        .extend(old_threads.iter().map(|thread| thread.metadata.thread_id));
+                    if !old_threads.is_empty() || !old_terminals.is_empty() {
+                        entries_hidden_by_recent_filter.push(ListEntry::ProjectHeader {
+                            key: group_key.clone(),
+                            label: label.clone(),
+                            highlight_positions: Vec::new(),
+                            has_running_threads,
+                            waiting_thread_count,
+                            has_notifications: false,
+                            is_active,
+                            has_threads,
+                        });
+                        entries_hidden_by_recent_filter.extend(
+                            old_terminals
+                                .into_iter()
+                                .map(ListEntry::Terminal)
+                                .chain(old_threads.into_iter().map(ListEntry::Thread)),
+                        );
+                    }
+
+                    // Keep the active group so a project without recent
+                    // threads doesn't vanish while it's open.
+                    if threads.is_empty() && terminals.is_empty() && !is_active {
+                        continue;
+                    }
+                }
+
                 project_header_indices.push(entries.len());
                 entries.push(ListEntry::ProjectHeader {
                     key: group_key.clone(),
@@ -2066,6 +2132,7 @@ impl Sidebar {
 
         self.contents = SidebarContents {
             entries,
+            entries_hidden_by_recent_filter,
             notified_threads,
             notified_terminals,
             project_header_indices,
@@ -3549,6 +3616,36 @@ impl Sidebar {
         }
 
         cx.notify();
+    }
+
+    fn toggle_recent_threads(
+        &mut self,
+        _: &ToggleRecentThreads,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_recent_only = !self.show_recent_only;
+        self.update_filter_placeholder(window, cx);
+        self.update_entries(cx);
+        self.serialize(cx);
+    }
+
+    fn recent_window_label(cx: &App) -> String {
+        format!(
+            "{}h",
+            AgentSettings::get_global(cx).threads_sidebar.recent_hours
+        )
+    }
+
+    fn update_filter_placeholder(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let placeholder = if self.show_recent_only {
+            format!("Search threads… (last {})", Self::recent_window_label(cx))
+        } else {
+            "Search threads…".to_string()
+        };
+        self.filter_editor.update(cx, |editor, cx| {
+            editor.set_placeholder_text(&placeholder, window, cx);
+        });
     }
 
     fn reset_filter_editor_text(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
@@ -6158,6 +6255,32 @@ impl Sidebar {
         }
     }
 
+    /// Whether a thread stays visible in "Recent" mode no matter how old it is.
+    fn is_sticky_thread(
+        &self,
+        thread: &ThreadEntry,
+        notified_threads: &HashSet<agent_ui::ThreadId>,
+    ) -> bool {
+        matches!(
+            thread.status,
+            AgentThreadStatus::Running | AgentThreadStatus::WaitingForConfirmation
+        ) || thread.draft.is_some()
+            || notified_threads.contains(&thread.metadata.thread_id)
+            || self
+                .active_entry
+                .as_ref()
+                .is_some_and(|entry| entry.is_active_thread(&thread.metadata.thread_id))
+    }
+
+    /// Whether a terminal stays visible in "Recent" mode no matter how old it is.
+    fn is_sticky_terminal(&self, terminal: &TerminalEntry) -> bool {
+        terminal.has_notification
+            || self
+                .active_entry
+                .as_ref()
+                .is_some_and(|entry| entry.is_active_terminal(terminal.metadata.terminal_id))
+    }
+
     fn thread_row_display_time(thread: &ThreadEntry) -> DateTime<Utc> {
         if thread.draft == Some(DraftKind::Empty) {
             DateTime::<Utc>::MAX_UTC
@@ -6231,6 +6354,7 @@ impl Sidebar {
             .contents
             .entries
             .iter()
+            .chain(&self.contents.entries_hidden_by_recent_filter)
             .filter_map(|entry| match entry {
                 ListEntry::ProjectHeader { label, key, .. } => {
                     current_header_label = Some(label.clone());
@@ -7786,6 +7910,26 @@ impl Sidebar {
                                     && !self.filter_editor.focus_handle(cx).is_focused(window),
                                 |this| this.child(KeyBinding::for_action(&FocusSidebarFilter, cx)),
                             )
+                            .child({
+                                let show_recent_only = self.show_recent_only;
+                                let recent_window_label = Self::recent_window_label(cx);
+                                IconButton::new("toggle_recent_threads", IconName::CountdownTimer)
+                                    .icon_size(IconSize::Small)
+                                    .toggle_state(show_recent_only)
+                                    .tooltip(move |_, cx| {
+                                        let label = if show_recent_only {
+                                            "Show All Threads".to_string()
+                                        } else {
+                                            format!(
+                                                "Show Only Threads from the Last {recent_window_label}"
+                                            )
+                                        };
+                                        Tooltip::for_action(label, &ToggleRecentThreads, cx)
+                                    })
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.toggle_recent_threads(&ToggleRecentThreads, window, cx);
+                                    }))
+                            })
                             .when(has_query, |this| {
                                 this.child(
                                     IconButton::new("clear_filter", IconName::Close)
@@ -8268,6 +8412,7 @@ impl WorkspaceSidebar for Sidebar {
                 SidebarView::ThreadList => SerializedSidebarView::ThreadList,
                 SidebarView::Archive(_) => SerializedSidebarView::History,
             },
+            show_recent_only: self.show_recent_only,
         };
         serde_json::to_string(&serialized).ok()
     }
@@ -8286,6 +8431,13 @@ impl WorkspaceSidebar for Sidebar {
             {
                 self.width = px(width).clamp(THREADS_LIST_MIN_WIDTH, THREADS_LIST_MAX_WIDTH);
                 self.width_set_by_user = true;
+            }
+            if serialized.show_recent_only != self.show_recent_only {
+                self.show_recent_only = serialized.show_recent_only;
+                self.update_filter_placeholder(window, cx);
+                // Restoring runs inside a `MultiWorkspace` update, which
+                // rebuilding reads, so the rebuild has to wait.
+                self.schedule_update_entries(false, cx);
             }
             if serialized.active_view == SerializedSidebarView::History {
                 cx.defer_in(window, |this, window, cx| {
@@ -8340,6 +8492,7 @@ impl Render for Sidebar {
             .on_action(cx.listener(Self::new_terminal_thread))
             .on_action(cx.listener(Self::toggle_archive))
             .on_action(cx.listener(Self::focus_sidebar_filter))
+            .on_action(cx.listener(Self::toggle_recent_threads))
             .on_action(cx.listener(Self::on_toggle_thread_switcher))
             .on_action(cx.listener(Self::on_next_project))
             .on_action(cx.listener(Self::on_previous_project))
