@@ -2,9 +2,10 @@ use anyhow::Result;
 use git::repository::RepoPath;
 use git::status::TreeDiffStatus;
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    IntoElement, ObjectFit, Render, StyledImage as _, Subscription, Task, WeakEntity, Window,
-    checkerboard, img,
+    AnyElement, App, AppContext as _, Bounds, Context, CursorStyle, Entity, EventEmitter,
+    FocusHandle, Focusable, IntoElement, MouseButton, ObjectFit, Pixels, Point, Render,
+    ScrollDelta, StyledImage as _, Subscription, Task, WeakEntity, Window, canvas, checkerboard,
+    img,
 };
 use project::{
     Project, ProjectPath,
@@ -14,12 +15,17 @@ use project::{
     },
     image_store::{ImageItem, ImageMetadata, create_gpui_image},
 };
-use std::sync::Arc;
-use ui::prelude::*;
+use std::{cell::Cell, rc::Rc, sync::Arc};
+use ui::{Tooltip, prelude::*};
 use util::{ResultExt as _, paths::PathStyle, size::format_file_size};
 use workspace::{Item, Workspace};
 
 const CHECKERBOARD_SQUARE_SIZE: f32 = 16.;
+/// Zoom levels are relative to the image fitted into its frame, so 1.0 shows the whole image.
+const MIN_ZOOM: f32 = 1.0;
+const MAX_ZOOM: f32 = 20.0;
+const ZOOM_STEP: f32 = 1.25;
+const SCROLL_LINE_MULTIPLIER: f32 = 20.0;
 
 #[derive(Clone)]
 pub(crate) enum ImageDiffSide {
@@ -125,6 +131,10 @@ pub(crate) struct ImageDiff {
     new_side: ImageDiffSide,
     last_status_entry: Option<StatusEntry>,
     load_task: Task<()>,
+    /// Shared by both sides so the old and new images stay aligned while zoomed.
+    zoom_level: f32,
+    pan_offset: Point<Pixels>,
+    drag_position: Option<Point<Pixels>>,
     #[cfg(test)]
     reload_count: usize,
     _subscriptions: Vec<Subscription>,
@@ -184,6 +194,9 @@ impl ImageDiff {
             new_side: ImageDiffSide::Loading,
             last_status_entry,
             load_task: Task::ready(()),
+            zoom_level: MIN_ZOOM,
+            pan_offset: Point::default(),
+            drag_position: None,
             #[cfg(test)]
             reload_count: 0,
             _subscriptions: subscriptions,
@@ -294,22 +307,46 @@ impl ImageDiff {
             .reduce(f32::max)
     }
 
-    fn render_pane(&self, pane: ImageDiffPane, cx: &App) -> AnyElement {
+    fn is_zoomed(&self) -> bool {
+        self.zoom_level > MIN_ZOOM
+    }
+
+    /// Keeps the image point under `anchor`, an offset from the frame's center, in place.
+    fn set_zoom(&mut self, zoom_level: f32, anchor: Option<Point<Pixels>>, cx: &mut Context<Self>) {
+        let old_zoom_level = self.zoom_level;
+        self.zoom_level = zoom_level.clamp(MIN_ZOOM, MAX_ZOOM);
+        if !self.is_zoomed() {
+            self.pan_offset = Point::default();
+            self.drag_position = None;
+        } else if let Some(anchor) = anchor {
+            self.pan_offset =
+                anchor - (anchor - self.pan_offset) * (self.zoom_level / old_zoom_level);
+        }
+        cx.notify();
+    }
+
+    fn render_pane(&self, this: &Entity<Self>, pane: ImageDiffPane, cx: &App) -> AnyElement {
+        // Both sides share one zoom, so show its controls once, preferring the new side.
+        let controls_on_new = matches!(self.new_side, ImageDiffSide::Loaded { .. });
         let old = || {
-            render_side(
+            self.render_side(
+                this,
                 "old-image",
                 self.old_input.label.clone(),
                 &self.old_side,
                 Color::Deleted,
+                !controls_on_new,
                 cx,
             )
         };
         let new = || {
-            render_side(
+            self.render_side(
+                this,
                 "new-image",
                 self.new_input.label.clone(),
                 &self.new_side,
                 Color::Created,
+                controls_on_new,
                 cx,
             )
         };
@@ -328,7 +365,7 @@ impl ImageDiff {
 
 impl Render for ImageDiff {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.render_pane(ImageDiffPane::Both, cx)
+        self.render_pane(&cx.entity(), ImageDiffPane::Both, cx)
     }
 }
 
@@ -361,7 +398,9 @@ impl ImageDiffPaneView {
 
 impl Render for ImageDiffPaneView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.image_diff.read(cx).render_pane(self.pane, cx)
+        self.image_diff
+            .read(cx)
+            .render_pane(&self.image_diff, self.pane, cx)
     }
 }
 
@@ -497,72 +536,252 @@ impl Render for ImageDiffView {
     }
 }
 
-fn render_side(
-    id: &'static str,
-    label: SharedString,
-    side: &ImageDiffSide,
-    accent: Color,
-    cx: &App,
-) -> impl IntoElement {
-    let colors = cx.theme().colors();
-    let caption = match side {
-        ImageDiffSide::Loaded { metadata, .. } => format!(
-            "{label} · {}×{} · {}",
-            metadata.width,
-            metadata.height,
-            format_file_size(metadata.file_size, true)
-        ),
-        _ => label.to_string(),
-    };
-    let body = match side {
-        ImageDiffSide::Loading => Label::new("Loading…")
-            .color(Color::Muted)
-            .into_any_element(),
-        ImageDiffSide::Absent => Label::new("No image")
-            .color(Color::Muted)
-            .into_any_element(),
-        ImageDiffSide::Failed(message) => Label::new(message.clone())
-            .color(Color::Error)
-            .into_any_element(),
-        // Percentage heights do not resolve against the flex-sized frame, so `img` would take its
-        // height from its aspect ratio and overflow; absolute positioning sizes it to the frame.
-        ImageDiffSide::Loaded { image, .. } => div()
-            .absolute()
-            .inset_0()
-            .bg(checkerboard(
-                colors.panel_background,
-                CHECKERBOARD_SQUARE_SIZE,
-            ))
-            .child(
-                img(image.clone())
+impl ImageDiff {
+    fn render_side(
+        &self,
+        this: &Entity<Self>,
+        id: &'static str,
+        label: SharedString,
+        side: &ImageDiffSide,
+        accent: Color,
+        show_zoom_controls: bool,
+        cx: &App,
+    ) -> impl IntoElement {
+        let colors = cx.theme().colors();
+        let caption = match side {
+            ImageDiffSide::Loaded { metadata, .. } => format!(
+                "{label} · {}×{} · {}",
+                metadata.width,
+                metadata.height,
+                format_file_size(metadata.file_size, true)
+            ),
+            _ => label.to_string(),
+        };
+        let is_loaded = matches!(side, ImageDiffSide::Loaded { .. });
+        let body = match side {
+            ImageDiffSide::Loading => Label::new("Loading…")
+                .color(Color::Muted)
+                .into_any_element(),
+            ImageDiffSide::Absent => Label::new("No image")
+                .color(Color::Muted)
+                .into_any_element(),
+            ImageDiffSide::Failed(message) => Label::new(message.clone())
+                .color(Color::Error)
+                .into_any_element(),
+            // Percentage heights do not resolve against the flex-sized frame, so `img` would take its
+            // height from its aspect ratio and overflow; absolute positioning sizes it to the frame.
+            ImageDiffSide::Loaded { image, .. } => {
+                let margin = relative((1. - self.zoom_level) / 2.);
+                div()
                     .absolute()
                     .inset_0()
-                    .size_full()
-                    .object_fit(ObjectFit::Contain),
-            )
-            .into_any_element(),
-    };
+                    .bg(checkerboard(
+                        colors.panel_background,
+                        CHECKERBOARD_SQUARE_SIZE,
+                    ))
+                    .child(
+                        div()
+                            .absolute()
+                            .left(self.pan_offset.x)
+                            .top(self.pan_offset.y)
+                            .size_full()
+                            .child(
+                                img(image.clone())
+                                    .absolute()
+                                    .left(margin)
+                                    .top(margin)
+                                    .w(relative(self.zoom_level))
+                                    .h(relative(self.zoom_level))
+                                    .object_fit(ObjectFit::Contain),
+                            ),
+                    )
+                    .into_any_element()
+            }
+        };
 
-    v_flex()
-        .id(id)
-        .flex_1()
-        .h_full()
-        .min_w_0()
-        .gap_1()
-        .child(Label::new(caption).size(LabelSize::Small).color(accent))
-        .child(
-            div()
-                .relative()
-                .flex_1()
-                .w_full()
-                .min_h_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .border_1()
-                .border_color(colors.border)
-                .child(body),
-        )
+        // Filled in during prepaint so the event handlers can zoom around the cursor.
+        let frame_bounds = Rc::new(Cell::new(None::<Bounds<Pixels>>));
+        let frame = div()
+            .id("image-frame")
+            .relative()
+            .flex_1()
+            .w_full()
+            .min_h_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .overflow_hidden()
+            .border_1()
+            .border_color(colors.border)
+            .child(body)
+            .when(is_loaded, |frame| {
+                frame
+                    .child(
+                        canvas(
+                            {
+                                let frame_bounds = frame_bounds.clone();
+                                move |bounds, _, _| frame_bounds.set(Some(bounds))
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .inset_0(),
+                    )
+                    .when(self.is_zoomed(), |frame| {
+                        frame.cursor(if self.drag_position.is_some() {
+                            CursorStyle::ClosedHand
+                        } else {
+                            CursorStyle::OpenHand
+                        })
+                    })
+                    // Plain scrolling is left to the editor so the diff keeps scrolling past images.
+                    .on_scroll_wheel({
+                        let this = this.clone();
+                        let frame_bounds = frame_bounds.clone();
+                        move |event, _, cx| {
+                            if !(event.modifiers.control || event.modifiers.platform) {
+                                return;
+                            }
+                            cx.stop_propagation();
+                            let delta: f32 = match event.delta {
+                                ScrollDelta::Pixels(pixels) => pixels.y.into(),
+                                ScrollDelta::Lines(lines) => lines.y * SCROLL_LINE_MULTIPLIER,
+                            };
+                            let zoom_factor = if delta > 0. {
+                                1. + delta.abs() * 0.01
+                            } else {
+                                1. / (1. + delta.abs() * 0.01)
+                            };
+                            let anchor = frame_bounds
+                                .get()
+                                .map(|bounds| event.position - bounds.center());
+                            this.update(cx, |this, cx| {
+                                this.set_zoom(this.zoom_level * zoom_factor, anchor, cx)
+                            });
+                        }
+                    })
+                    .on_pinch({
+                        let this = this.clone();
+                        let frame_bounds = frame_bounds.clone();
+                        move |event, _, cx| {
+                            cx.stop_propagation();
+                            let anchor = frame_bounds
+                                .get()
+                                .map(|bounds| event.position - bounds.center());
+                            this.update(cx, |this, cx| {
+                                this.set_zoom(this.zoom_level * (1. + event.delta), anchor, cx)
+                            });
+                        }
+                    })
+                    .on_mouse_down(MouseButton::Left, {
+                        let this = this.clone();
+                        move |event, _, cx| {
+                            this.update(cx, |this, cx| {
+                                if this.is_zoomed() {
+                                    cx.stop_propagation();
+                                    this.drag_position = Some(event.position);
+                                    cx.notify();
+                                }
+                            });
+                        }
+                    })
+                    .on_mouse_move({
+                        let this = this.clone();
+                        move |event, _, cx| {
+                            this.update(cx, |this, cx| {
+                                if let Some(drag_position) = this.drag_position {
+                                    this.pan_offset += event.position - drag_position;
+                                    this.drag_position = Some(event.position);
+                                    cx.notify();
+                                }
+                            });
+                        }
+                    })
+                    .on_mouse_up(MouseButton::Left, {
+                        let this = this.clone();
+                        move |_, _, cx| this.update(cx, |this, cx| this.end_drag(cx))
+                    })
+                    .on_mouse_up_out(MouseButton::Left, {
+                        let this = this.clone();
+                        move |_, _, cx| this.update(cx, |this, cx| this.end_drag(cx))
+                    })
+            });
+
+        v_flex()
+            .id(id)
+            .flex_1()
+            .h_full()
+            .min_w_0()
+            .gap_1()
+            .child(
+                h_flex()
+                    .gap_1()
+                    .child(Label::new(caption).size(LabelSize::Small).color(accent))
+                    .when(is_loaded && show_zoom_controls, |caption| {
+                        caption.child(self.render_zoom_controls(this))
+                    }),
+            )
+            .child(frame)
+    }
+
+    fn render_zoom_controls(&self, this: &Entity<Self>) -> impl IntoElement {
+        h_flex()
+            .ml_auto()
+            .gap_0p5()
+            .when(self.is_zoomed(), |controls| {
+                controls
+                    .child(
+                        Label::new(format!("{:.0}%", self.zoom_level * 100.))
+                            .size(LabelSize::Small)
+                            .color(Color::Muted),
+                    )
+                    .child(
+                        IconButton::new("reset-zoom", IconName::RotateCcw)
+                            .icon_size(IconSize::XSmall)
+                            .tooltip(Tooltip::text("Reset Zoom"))
+                            .on_click({
+                                let this = this.clone();
+                                move |_, _, cx| {
+                                    this.update(cx, |this, cx| this.set_zoom(MIN_ZOOM, None, cx))
+                                }
+                            }),
+                    )
+            })
+            .child(
+                IconButton::new("zoom-out", IconName::Dash)
+                    .icon_size(IconSize::XSmall)
+                    .disabled(!self.is_zoomed())
+                    .tooltip(Tooltip::text("Zoom Out"))
+                    .on_click({
+                        let this = this.clone();
+                        move |_, _, cx| {
+                            this.update(cx, |this, cx| {
+                                this.set_zoom(this.zoom_level / ZOOM_STEP, None, cx)
+                            })
+                        }
+                    }),
+            )
+            .child(
+                IconButton::new("zoom-in", IconName::Plus)
+                    .icon_size(IconSize::XSmall)
+                    .disabled(self.zoom_level >= MAX_ZOOM)
+                    .tooltip(Tooltip::text("Zoom In"))
+                    .on_click({
+                        let this = this.clone();
+                        move |_, _, cx| {
+                            this.update(cx, |this, cx| {
+                                this.set_zoom(this.zoom_level * ZOOM_STEP, None, cx)
+                            })
+                        }
+                    }),
+            )
+    }
+
+    fn end_drag(&mut self, cx: &mut Context<Self>) {
+        if self.drag_position.take().is_some() {
+            cx.notify();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -578,7 +797,7 @@ pub(crate) fn png_bytes(width: u32, height: u32) -> Vec<u8> {
 mod tests {
     use super::*;
     use fs::FakeFs;
-    use gpui::TestAppContext;
+    use gpui::{TestAppContext, point};
     use serde_json::json;
     use settings::SettingsStore;
     use std::path::Path;
@@ -729,6 +948,29 @@ mod tests {
         assert_eq!(again.entity_id(), view.entity_id());
         workspace.read_with(cx, |workspace, cx| {
             assert_eq!(workspace.items_of_type::<ImageDiffView>(cx).count(), 1);
+        });
+    }
+
+    #[gpui::test]
+    async fn test_image_diff_zoom_keeps_anchor_in_place(cx: &mut TestAppContext) {
+        let (view, _workspace, _repository, cx) = open_view(Some(png_bytes(2, 2)), cx).await;
+        let image_diff = view.read_with(cx, |view, _| view.image_diff.clone());
+
+        image_diff.update(cx, |image_diff, cx| {
+            let anchor = point(px(40.), px(-20.));
+            image_diff.set_zoom(2., Some(anchor), cx);
+            assert_eq!(image_diff.zoom_level, 2.);
+            assert_eq!(image_diff.pan_offset, point(px(-40.), px(20.)));
+
+            image_diff.set_zoom(4., Some(anchor), cx);
+            assert_eq!(image_diff.pan_offset, point(px(-120.), px(60.)));
+
+            image_diff.set_zoom(100., None, cx);
+            assert_eq!(image_diff.zoom_level, MAX_ZOOM);
+
+            image_diff.set_zoom(0.5, Some(anchor), cx);
+            assert_eq!(image_diff.zoom_level, MIN_ZOOM);
+            assert_eq!(image_diff.pan_offset, Point::default());
         });
     }
 
