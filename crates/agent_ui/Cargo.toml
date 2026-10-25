@@ -22,7 +22,7 @@ test-support = [
     "workspace/test-support",
     "agent/test-support",
 ]
-audio = ["dep:audio"]
+audio = ["dep:audio", "dep:livekit_client", "dep:smol"]
 unit-eval = []
 
 [dependencies]
@@ -71,6 +71,7 @@ jsonschema.workspace = true
 language.workspace = true
 language_model.workspace = true
 language_models.workspace = true
+livekit_client = { workspace = true, optional = true }
 log.workspace = true
 lru.workspace = true
 lsp.workspace = true
@@ -98,6 +99,7 @@ search.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_json_lenient.workspace = true
+smol = { workspace = true, optional = true }
 settings.workspace = true
 streaming_diff.workspace = true
 task.workspace = true

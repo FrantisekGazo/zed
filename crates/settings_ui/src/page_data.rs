@@ -23,6 +23,12 @@ const DEFAULT_STRING: String = String::new();
 /// A default empty string reference. Useful in `pick` functions for cases either in dynamic item fields, or when dealing with `settings::Maybe`
 /// to avoid the "NO DEFAULT" case.
 const DEFAULT_EMPTY_STRING: Option<&String> = Some(&DEFAULT_STRING);
+const DEFAULT_FALSE: bool = false;
+const DEFAULT_FALSE_BOOL: Option<&bool> = Some(&DEFAULT_FALSE);
+const DEFAULT_SPEECH_TO_TEXT_TRIGGER_MODE: settings::SpeechToTextTriggerMode =
+    settings::SpeechToTextTriggerMode::Toggle;
+const DEFAULT_SPEECH_TO_TEXT_TRIGGER_MODE_VALUE: Option<&settings::SpeechToTextTriggerMode> =
+    Some(&DEFAULT_SPEECH_TO_TEXT_TRIGGER_MODE);
 
 const DEFAULT_AUDIO_OUTPUT: AudioOutputDeviceName = AudioOutputDeviceName(None);
 const DEFAULT_EMPTY_AUDIO_OUTPUT: Option<&AudioOutputDeviceName> = Some(&DEFAULT_AUDIO_OUTPUT);
@@ -6977,7 +6983,7 @@ fn panels_page() -> SettingsPage {
         ]
     }
 
-    fn agent_panel_section() -> [SettingsPageItem; 7] {
+    fn agent_panel_section() -> [SettingsPageItem; 11] {
         [
             SettingsPageItem::SectionHeader("Agent Panel"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -7036,6 +7042,108 @@ fn panels_page() -> SettingsPage {
                     },
                 }),
                 metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Enable Voice Input",
+                description: "Whether to show dictation controls in the agent composer.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("agent.speech_to_text.enabled"),
+                    pick: |settings_content| {
+                        settings_content
+                            .agent
+                            .as_ref()
+                            .and_then(|agent| agent.speech_to_text.as_ref())
+                            .and_then(|speech_to_text| speech_to_text.enabled.as_ref())
+                            .or(DEFAULT_FALSE_BOOL)
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .agent
+                            .get_or_insert_default()
+                            .set_speech_to_text_enabled(value.unwrap_or(false));
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Voice Input Trigger Mode",
+                description: "Whether the dictation button records until clicked again or only while held down.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("agent.speech_to_text.trigger_mode"),
+                    pick: |settings_content| {
+                        settings_content
+                            .agent
+                            .as_ref()
+                            .and_then(|agent| agent.speech_to_text.as_ref())
+                            .and_then(|speech_to_text| speech_to_text.trigger_mode.as_ref())
+                            .or(DEFAULT_SPEECH_TO_TEXT_TRIGGER_MODE_VALUE)
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .agent
+                            .get_or_insert_default()
+                            .set_speech_to_text_trigger_mode(value.unwrap_or_default());
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Voice Input Server URL",
+                description: "Base URL of the OpenAI-compatible transcription API used for voice input.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("agent.speech_to_text.api_url"),
+                    pick: |settings_content| {
+                        settings_content
+                            .agent
+                            .as_ref()
+                            .and_then(|agent| agent.speech_to_text.as_ref())
+                            .and_then(|speech_to_text| speech_to_text.api_url.as_ref())
+                            .or(DEFAULT_EMPTY_STRING)
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .agent
+                            .get_or_insert_default()
+                            .set_speech_to_text_api_url(value.unwrap_or_default());
+                    },
+                }),
+                metadata: Some(Box::new(SettingsFieldMetadata {
+                    placeholder: Some("http://localhost:8010/v1"),
+                    ..Default::default()
+                })),
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Voice Input Model",
+                description: "Model name sent to the transcription server.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("agent.speech_to_text.model"),
+                    pick: |settings_content| {
+                        settings_content
+                            .agent
+                            .as_ref()
+                            .and_then(|agent| agent.speech_to_text.as_ref())
+                            .and_then(|speech_to_text| speech_to_text.model.as_ref())
+                            .or(DEFAULT_EMPTY_STRING)
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .agent
+                            .get_or_insert_default()
+                            .set_speech_to_text_model(value.unwrap_or_default());
+                    },
+                }),
+                metadata: Some(Box::new(SettingsFieldMetadata {
+                    placeholder: Some("phonon-2.5-en"),
+                    ..Default::default()
+                })),
                 files: USER,
             }),
             SettingsPageItem::SettingItem(SettingItem {

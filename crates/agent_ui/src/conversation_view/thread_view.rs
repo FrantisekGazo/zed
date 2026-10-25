@@ -59,6 +59,9 @@ use super::elicitation::{
 use super::subagent_card::{SubagentCardId, SubagentCardState, SubagentStatus, acp_subagent_card};
 use super::*;
 
+#[cfg(feature = "audio")]
+mod voice_input;
+
 /// Which side of a session message a transcript shows, and the other participant when it
 /// is known.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -815,6 +818,9 @@ pub struct ThreadView {
     pub _subscriptions: Vec<Subscription>,
     pub message_editor: Entity<MessageEditor>,
     pub add_context_menu_handle: PopoverMenuHandle<ContextMenu>,
+    #[cfg(feature = "audio")]
+    microphone_menu_handle:
+        PopoverMenuHandle<picker::Picker<voice_input::MicrophonePickerDelegate>>,
     pub thinking_effort_menu_handle: PopoverMenuHandle<ContextMenu>,
     pub fast_mode_menu_handle: PopoverMenuHandle<ContextMenu>,
     pub project: WeakEntity<Project>,
@@ -824,6 +830,12 @@ pub struct ThreadView {
     pub(crate) code_span_resolver: AgentCodeSpanResolver,
     pub show_external_source_prompt_warning: bool,
     pub show_codex_windows_warning: bool,
+    #[cfg(feature = "audio")]
+    pub selected_microphone_id: Option<String>,
+    #[cfg(feature = "audio")]
+    microphone_picker: Option<Entity<picker::Picker<voice_input::MicrophonePickerDelegate>>>,
+    #[cfg(feature = "audio")]
+    voice_recording_state: voice_input::VoiceRecordingState,
     sandbox_status: Option<VerifiedSandboxStatus>,
     sandbox_status_key: Option<SandboxStatusKey>,
     pending_sandbox_status_key: Option<SandboxStatusKey>,
@@ -1056,6 +1068,8 @@ impl ThreadView {
     ) -> Self {
         let session_id = thread.read(cx).session_id().clone();
         let parent_session_id = thread.read(cx).parent_session_id().cloned();
+        #[cfg(feature = "audio")]
+        audio::ensure_devices_initialized(cx);
 
         subscriptions.push(cx.observe(&thread, |_, _, cx| cx.notify()));
         subscriptions.push(cx.observe(&conversation, |_, _, cx| cx.notify()));
@@ -1326,12 +1340,23 @@ impl ThreadView {
             current_submission,
             message_editor,
             add_context_menu_handle: PopoverMenuHandle::default(),
+            #[cfg(feature = "audio")]
+            microphone_menu_handle: PopoverMenuHandle::default(),
             thinking_effort_menu_handle: PopoverMenuHandle::default(),
             fast_mode_menu_handle: PopoverMenuHandle::default(),
             project,
             code_span_resolver,
             show_external_source_prompt_warning,
             show_codex_windows_warning,
+            #[cfg(feature = "audio")]
+            selected_microphone_id: audio::AudioSettings::get_global(cx)
+                .input_audio_device
+                .as_ref()
+                .map(ToString::to_string),
+            #[cfg(feature = "audio")]
+            microphone_picker: None,
+            #[cfg(feature = "audio")]
+            voice_recording_state: voice_input::VoiceRecordingState::Idle,
             sandbox_status: None,
             sandbox_status_key: None,
             pending_sandbox_status_key: None,
@@ -5400,6 +5425,10 @@ impl ThreadView {
         let max_content_width = AgentSettings::get_global(cx).max_content_width;
         let has_messages = self.has_visible_conversation(cx);
         let fills_container = !has_messages || editor_expanded;
+        #[cfg(feature = "audio")]
+        let microphone_control = self.render_microphone_control(window, cx);
+        #[cfg(not(feature = "audio"))]
+        let microphone_control: Option<AnyElement> = None;
         let composer_is_read_only = self.message_editor.read(cx).editor().read(cx).read_only(cx);
         let discard_draft_button = composer_is_read_only.then(|| {
             div()
@@ -5511,6 +5540,7 @@ impl ThreadView {
                                     .children(self.render_activity_status_label(cx))
                                     .children(discard_draft_button)
                                     .children(self.render_token_usage(cx))
+                                    .children(microphone_control)
                                     .children(self.profile_selector.clone())
                                     .map(|this| match self.config_options_view.clone() {
                                         Some(config_view) => this.child(config_view),
@@ -13880,6 +13910,13 @@ impl Render for ThreadView {
             .on_action(cx.listener(Self::handle_toggle_command_pattern))
             .on_action(cx.listener(Self::open_permission_dropdown))
             .on_action(cx.listener(Self::open_add_context_menu))
+            .map(|this| {
+                #[cfg(feature = "audio")]
+                let this = this
+                    .on_action(cx.listener(Self::toggle_voice_recording))
+                    .on_action(cx.listener(Self::toggle_microphone_menu));
+                this
+            })
             .on_action(cx.listener(Self::scroll_output_page_up))
             .on_action(cx.listener(Self::scroll_output_page_down))
             .on_action(cx.listener(Self::scroll_output_line_up))

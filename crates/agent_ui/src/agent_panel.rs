@@ -58,7 +58,7 @@ use crate::{
     },
     ui::{AgentNotification, AgentNotificationEvent, EndTrialUpsell},
 };
-use agent_settings::AgentSettings;
+use agent_settings::{AgentSettings, SpeechToTextTriggerMode};
 use ai_onboarding::AgentPanelOnboarding;
 use anyhow::{Context as _, Result, anyhow};
 #[cfg(feature = "audio")]
@@ -94,7 +94,7 @@ use terminal_view::TerminalView;
 use text::OffsetRangeExt;
 use theme_settings::ThemeSettings;
 use ui::{
-    ContextMenu, ContextMenuEntry, GradientFade, IconButton, KeyBinding, PopoverMenu,
+    ContextMenu, ContextMenuEntry, GradientFade, IconButton, IconPosition, KeyBinding, PopoverMenu,
     PopoverMenuHandle, ProjectEmptyState, Tab, Tooltip, prelude::*, utils::WithRemSize,
 };
 use util::ResultExt as _;
@@ -5772,6 +5772,10 @@ impl AgentPanel {
         let supports_logout = self
             .active_conversation_view()
             .is_some_and(|conversation_view| conversation_view.read(cx).supports_logout());
+        let speech_to_text_settings = AgentSettings::get_global(cx).speech_to_text.clone();
+        let voice_input_enabled = speech_to_text_settings.enabled;
+        let voice_input_trigger_mode = speech_to_text_settings.trigger_mode;
+        let fs = self.fs.clone();
 
         let project_agents_md_path = project_agents_md_path(&self.project, true, cx);
 
@@ -5920,7 +5924,83 @@ impl AgentPanel {
 
                             menu = menu
                                 .separator()
-                                .action("Profiles", Box::new(ManageProfiles::default()));
+                                .action("Profiles", Box::new(ManageProfiles::default()))
+                                .separator()
+                                .header("Voice Input")
+                                .item(
+                                    ContextMenuEntry::new("Enable Voice Input")
+                                        .toggleable(IconPosition::End, voice_input_enabled)
+                                        .handler({
+                                            let fs = fs.clone();
+                                            move |_window, cx| {
+                                                update_settings_file(
+                                                    fs.clone(),
+                                                    cx,
+                                                    move |settings, _| {
+                                                        settings
+                                                            .agent
+                                                            .get_or_insert_default()
+                                                            .set_speech_to_text_enabled(
+                                                                !voice_input_enabled,
+                                                            );
+                                                    },
+                                                );
+                                            }
+                                        }),
+                                )
+                                .item(
+                                    ContextMenuEntry::new("Toggle to Record")
+                                        .toggleable(
+                                            IconPosition::End,
+                                            voice_input_trigger_mode
+                                                == SpeechToTextTriggerMode::Toggle,
+                                        )
+                                        .disabled(!voice_input_enabled)
+                                        .handler({
+                                            let fs = fs.clone();
+                                            move |_window, cx| {
+                                                update_settings_file(
+                                                    fs.clone(),
+                                                    cx,
+                                                    move |settings, _| {
+                                                        settings
+                                                            .agent
+                                                            .get_or_insert_default()
+                                                            .set_speech_to_text_trigger_mode(
+                                                                SpeechToTextTriggerMode::Toggle,
+                                                            );
+                                                    },
+                                                );
+                                            }
+                                        }),
+                                )
+                                .item(
+                                    ContextMenuEntry::new("Hold to Record")
+                                        .toggleable(
+                                            IconPosition::End,
+                                            voice_input_trigger_mode
+                                                == SpeechToTextTriggerMode::Hold,
+                                        )
+                                        .disabled(!voice_input_enabled)
+                                        .handler({
+                                            let fs = fs.clone();
+                                            move |_window, cx| {
+                                                update_settings_file(
+                                                    fs.clone(),
+                                                    cx,
+                                                    move |settings, _| {
+                                                        settings
+                                                            .agent
+                                                            .get_or_insert_default()
+                                                            .set_speech_to_text_trigger_mode(
+                                                                SpeechToTextTriggerMode::Hold,
+                                                            );
+                                                    },
+                                                );
+                                            }
+                                        }),
+                                )
+                                .separator();
                         }
 
                         menu = menu

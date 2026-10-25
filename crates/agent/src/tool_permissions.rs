@@ -619,6 +619,7 @@ mod tests {
                 recent_hours: 24,
             },
             thinking_display: Default::default(),
+            speech_to_text: Default::default(),
         }
     }
 
