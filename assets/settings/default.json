@@ -1880,6 +1880,18 @@
     // 2. Show unstaged hunks hollow and staged hunks filled:
     //    "hunk_style": "unstaged_hollow"
     "hunk_style": "staged_hollow",
+    // How changed words are found and highlighted within diff hunks.
+    // This setting can take two values:
+    //
+    // 1. Compare whole hunks word by word, matching re-indented lines with their
+    //    original lines. Unified diffs show only the new text of such hunks,
+    //    with the changes highlighted within it. Hunks larger than 32 KiB on
+    //    either side are shown as with "lines":
+    //    "word_diff_style": "block"
+    // 2. Only highlight changed words within small hunks that replace the same
+    //    number of lines:
+    //    "word_diff_style": "lines"
+    "word_diff_style": "block",
     // Whether git features diff against HEAD ("head") or the default branch ("default_branch").
     "diff_base": "head",
     // Should the name or path be displayed first in the git view.

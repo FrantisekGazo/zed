@@ -1,8 +1,8 @@
 use super::*;
 use buffer_diff::{DiffHunkStatus, DiffHunkStatusKind};
-use gpui::{App, Entity, TestAppContext};
+use gpui::{App, BorrowAppContext as _, Entity, TestAppContext};
 use indoc::indoc;
-use language::{Buffer, Rope};
+use language::{Buffer, Rope, WordDiffKind};
 use parking_lot::RwLock;
 use rand::prelude::*;
 use settings::SettingsStore;
@@ -29,6 +29,7 @@ fn test_empty_singleton(cx: &mut App) {
             diff_status: None,
             expand_info: None,
             wrapped_buffer_row: None,
+            is_block_diff: false,
         }]
     );
 }
@@ -6452,6 +6453,7 @@ impl ReferenceMultibuffer {
                                     ),
                                 })
                             }),
+                            is_block_diff: false,
                         }
                     });
                 ix += line.len() + 1;
@@ -7270,7 +7272,7 @@ fn collect_word_diffs(
     snapshot
         .diff_hunks()
         .flat_map(|hunk| hunk.word_diffs)
-        .map(|range| text[range.start.0..range.end.0].to_string())
+        .map(|(range, _)| text[range.start.0..range.end.0].to_string())
         .collect()
 }
 
@@ -7295,7 +7297,7 @@ fn assert_word_diff_ranges_valid(snapshot: &MultiBufferSnapshot) -> Vec<String> 
     let text = snapshot.text();
     let ranges: Vec<_> = snapshot
         .diff_hunks()
-        .flat_map(|hunk| hunk.word_diffs)
+        .flat_map(|hunk| hunk.word_diffs.into_iter().map(|(range, _)| range))
         .collect();
 
     for range in &ranges {
@@ -7378,4 +7380,240 @@ enum AnchorContractOp {
         index: u16,
         right: bool,
     },
+}
+
+fn set_block_word_diff_style(cx: &mut TestAppContext) {
+    let settings_store = cx.update(|cx| SettingsStore::test(cx));
+    cx.set_global(settings_store);
+    cx.update(|cx| {
+        cx.update_global::<SettingsStore, _>(|store, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings.git.get_or_insert_default().word_diff_style =
+                    Some(settings::WordDiffStyle::Block);
+            });
+        });
+    });
+}
+
+fn word_diff_texts(snapshot: &MultiBufferSnapshot) -> Vec<(String, WordDiffKind)> {
+    let text = snapshot.text();
+    snapshot
+        .diff_hunks()
+        .flat_map(|hunk| hunk.word_diffs)
+        .map(|(range, kind)| (text[range.start.0..range.end.0].to_string(), kind))
+        .collect()
+}
+
+#[gpui::test]
+async fn test_block_word_diff_hides_base_text(cx: &mut TestAppContext) {
+    set_block_word_diff_style(cx);
+    let base_text = indoc!(
+        "
+        a
+        return Foo(
+          x: 1,
+        );
+        b
+        "
+    );
+    let text = indoc!(
+        "
+        a
+        return Padding(
+          child: Foo(
+            x: 1,
+          ),
+        );
+        b
+        "
+    );
+    let buffer = cx.new(|cx| Buffer::local(text, cx));
+    let diff = cx
+        .new(|cx| BufferDiff::new_with_base_text(base_text, &buffer.read(cx).text_snapshot(), cx));
+    cx.run_until_parked();
+
+    let multibuffer = cx.new(|cx| {
+        let mut multibuffer = MultiBuffer::singleton(buffer.clone(), cx);
+        multibuffer.add_diff(diff.clone(), cx);
+        multibuffer
+    });
+    let (mut snapshot, mut subscription) = multibuffer.update(cx, |multibuffer, cx| {
+        (multibuffer.snapshot(cx), multibuffer.subscribe())
+    });
+
+    multibuffer.update(cx, |multibuffer, cx| {
+        multibuffer.expand_diff_hunks(vec![Anchor::Min..Anchor::Max], cx);
+    });
+    let expected = indoc!(
+        "
+          a
+        + return Padding(
+        +   child: Foo(
+        +     x: 1,
+        +   ),
+          );
+          b
+        "
+    );
+    assert_new_snapshot(&multibuffer, &mut snapshot, &mut subscription, cx, expected);
+    assert_eq!(
+        snapshot
+            .row_infos(MultiBufferRow(0))
+            .map(|info| info.is_block_diff)
+            .collect::<Vec<_>>(),
+        vec![false, true, true, true, true, false, false, false]
+    );
+    assert_eq!(
+        word_diff_texts(&snapshot),
+        vec![
+            ("Padding(".to_string(), WordDiffKind::Inserted),
+            ("  child:".to_string(), WordDiffKind::Inserted),
+            (" ".to_string(), WordDiffKind::Inserted),
+            ("  ".to_string(), WordDiffKind::Inserted),
+            ("  ".to_string(), WordDiffKind::Inserted),
+            ("),".to_string(), WordDiffKind::Inserted),
+        ]
+    );
+
+    // The hunk stays expanded without its base text across unrelated edits.
+    buffer.update(cx, |buffer, cx| {
+        let end = buffer.len();
+        buffer.edit([(end - 2..end - 1, "B")], None, cx)
+    });
+    diff.update(cx, |diff, cx| {
+        diff.recalculate_diff_sync(&buffer.read(cx).text_snapshot(), cx)
+    });
+    cx.run_until_parked();
+    assert_new_snapshot(
+        &multibuffer,
+        &mut snapshot,
+        &mut subscription,
+        cx,
+        &expected.replacen("  b", "  B", 1),
+    );
+}
+
+#[gpui::test]
+async fn test_block_word_diff_hides_changed_base_text(cx: &mut TestAppContext) {
+    set_block_word_diff_style(cx);
+    let base_text = "a\nfoo(1)\nb\n";
+    let text = "a\nbar(\n  1,\n)\nb\n";
+    let buffer = cx.new(|cx| Buffer::local(text, cx));
+    let diff = cx
+        .new(|cx| BufferDiff::new_with_base_text(base_text, &buffer.read(cx).text_snapshot(), cx));
+    cx.run_until_parked();
+
+    let multibuffer = cx.new(|cx| {
+        let mut multibuffer = MultiBuffer::singleton(buffer.clone(), cx);
+        multibuffer.add_diff(diff.clone(), cx);
+        multibuffer.set_all_diff_hunks_expanded(cx);
+        multibuffer
+    });
+    let snapshot = multibuffer.read_with(cx, |multibuffer, cx| multibuffer.snapshot(cx));
+    let actual_diff = format_diff(
+        &snapshot.text(),
+        &snapshot.row_infos(MultiBufferRow(0)).collect::<Vec<_>>(),
+        &Default::default(),
+        None,
+    );
+    assert_eq!(
+        actual_diff,
+        indoc!(
+            "
+              a
+            + bar(
+            +   1,
+            + )
+              b
+            "
+        )
+    );
+    assert_eq!(
+        word_diff_texts(&snapshot),
+        vec![
+            ("bar".to_string(), WordDiffKind::Modified),
+            ("  ".to_string(), WordDiffKind::Inserted),
+            (",".to_string(), WordDiffKind::Inserted),
+            ("\n".to_string(), WordDiffKind::Inserted),
+        ]
+    );
+}
+
+#[gpui::test]
+async fn test_block_word_diff_across_excerpts(cx: &mut TestAppContext) {
+    set_block_word_diff_style(cx);
+    let unchanged = "same\n".repeat(10);
+    let base_text = format!("foo(1)\n{unchanged}bar(2)\n");
+    let text = format!("wrap(\n  foo(1),\n)\n{unchanged}wrap(\n  bar(2),\n)\n");
+    let buffer = cx.new(|cx| Buffer::local(text, cx));
+    let diff = cx
+        .new(|cx| BufferDiff::new_with_base_text(&base_text, &buffer.read(cx).text_snapshot(), cx));
+    cx.run_until_parked();
+
+    let multibuffer = cx.new(|cx| {
+        let mut multibuffer = MultiBuffer::new(Capability::ReadWrite);
+        multibuffer.set_excerpts_for_path(
+            PathKey::sorted(0),
+            buffer.clone(),
+            [
+                Point::new(1, 0)..Point::new(1, 0),
+                Point::new(14, 0)..Point::new(14, 0),
+            ],
+            1,
+            cx,
+        );
+        multibuffer.add_diff(diff.clone(), cx);
+        multibuffer.set_all_diff_hunks_expanded(cx);
+        multibuffer
+    });
+    let snapshot = multibuffer.read_with(cx, |multibuffer, cx| multibuffer.snapshot(cx));
+    assert_eq!(snapshot.excerpts().count(), 2);
+    assert_eq!(snapshot.diff_hunks().count(), 2);
+    let text = snapshot.text();
+    assert!(!text.contains("foo(1)\nwrap("));
+    assert!(!text.contains("bar(2)\nwrap("));
+    assert!(
+        snapshot
+            .row_infos(MultiBufferRow(0))
+            .any(|info| info.is_block_diff)
+    );
+}
+
+#[gpui::test]
+async fn test_block_word_diff_inverted_diff_shows_base_text(cx: &mut TestAppContext) {
+    set_block_word_diff_style(cx);
+    let base_text = "a\nfoo(1)\nb\n";
+    let text = "a\nwrap(\n  foo(1),\n)\nb\n";
+    let buffer = cx.new(|cx| Buffer::local(text, cx));
+    let diff = cx
+        .new(|cx| BufferDiff::new_with_base_text(base_text, &buffer.read(cx).text_snapshot(), cx));
+    cx.run_until_parked();
+    let base_text_buffer = diff.read_with(cx, |diff, _| diff.base_text_buffer().clone());
+    let multibuffer = cx.new(|cx| MultiBuffer::singleton(base_text_buffer.clone(), cx));
+    let (mut snapshot, mut subscription) = multibuffer.update(cx, |multibuffer, cx| {
+        (multibuffer.snapshot(cx), multibuffer.subscribe())
+    });
+    multibuffer.update(cx, |multibuffer, cx| {
+        multibuffer.add_inverted_diff(diff, buffer.clone(), cx);
+    });
+    assert_new_snapshot(
+        &multibuffer,
+        &mut snapshot,
+        &mut subscription,
+        cx,
+        indoc!(
+            "
+              a
+            - foo(1)
+              b
+            "
+        ),
+    );
+    assert_eq!(
+        snapshot
+            .row_infos(MultiBufferRow(0))
+            .map(|info| info.is_block_diff)
+            .collect::<Vec<_>>(),
+        vec![false, true, false, false]
+    );
 }

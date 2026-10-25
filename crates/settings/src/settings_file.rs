@@ -143,6 +143,7 @@ pub fn test_settings() -> &'static str {
                 "buffer_font_size": 14,
                 "buffer_font_fallbacks": [],
                 "theme": EMPTY_THEME_NAME,
+                "git": { "word_diff_style": "lines" },
             }),
             &mut value,
         );
@@ -159,6 +160,7 @@ pub fn test_settings() -> &'static str {
                 "buffer_font_size": 14,
                 "buffer_font_fallbacks": [],
                 "theme": EMPTY_THEME_NAME,
+                "git": { "word_diff_style": "lines" },
             }),
             &mut value,
         );

@@ -15593,6 +15593,75 @@ async fn test_staged_diff_without_unstaged_diff(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
+async fn test_word_diff_style_change_recomputes_uncommitted_diff(cx: &mut gpui::TestAppContext) {
+    init_test(cx);
+    cx.update(|cx| {
+        SettingsStore::update_global(cx, |settings, cx| {
+            settings.update_user_settings(cx, |settings| {
+                settings.git.get_or_insert_default().word_diff_style =
+                    Some(settings::WordDiffStyle::Lines);
+            });
+        });
+    });
+
+    let committed_contents = "a\nreturn Foo(\n  x: 1,\n);\nb\n".to_string();
+    let file_contents = "a\nreturn Padding(\n  child: Foo(\n    x: 1,\n  ),\n);\nb\n";
+    let fs = FakeFs::new(cx.background_executor.clone());
+    fs.insert_tree(
+        "/dir",
+        json!({
+            ".git": {},
+            "src": { "view.dart": file_contents },
+        }),
+    )
+    .await;
+    fs.set_head_and_index_for_repo(
+        Path::new("/dir/.git"),
+        &[("src/view.dart", committed_contents)],
+    );
+
+    let project = Project::test(fs.clone(), ["/dir".as_ref()], cx).await;
+    let buffer = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer("/dir/src/view.dart", cx)
+        })
+        .await
+        .unwrap();
+    let diff = project
+        .update(cx, |project, cx| {
+            project.open_uncommitted_diff(buffer.clone(), cx)
+        })
+        .await
+        .unwrap();
+    cx.run_until_parked();
+
+    let is_block_diff = |cx: &mut gpui::TestAppContext| {
+        diff.update(cx, |diff, cx| {
+            let snapshot = buffer.read(cx).snapshot();
+            diff.snapshot(cx)
+                .hunks_intersecting_range(
+                    Anchor::min_max_range_for_buffer(snapshot.remote_id()),
+                    &snapshot,
+                )
+                .map(|hunk| hunk.is_block_diff)
+                .collect::<Vec<_>>()
+        })
+    };
+    assert_eq!(is_block_diff(cx), vec![false]);
+
+    cx.update(|cx| {
+        SettingsStore::update_global(cx, |settings, cx| {
+            settings.update_user_settings(cx, |settings| {
+                settings.git.get_or_insert_default().word_diff_style =
+                    Some(settings::WordDiffStyle::Block);
+            });
+        });
+    });
+    cx.run_until_parked();
+    assert_eq!(is_block_diff(cx), vec![true]);
+}
+
+#[gpui::test]
 async fn test_uncommitted_diff_for_buffer(cx: &mut gpui::TestAppContext) {
     init_test(cx);
 

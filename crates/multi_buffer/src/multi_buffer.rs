@@ -25,7 +25,7 @@ use language::{
     DiagnosticEntryRef, File, IndentGuideSettings, IndentSize, Language, LanguageAwareStyling,
     LanguageScope, OffsetRangeExt, OffsetUtf16, Outline, OutlineItem, Point, PointUtf16, Selection,
     TextDimension, TextObject, ToOffset as _, ToPoint as _, TransactionId, TreeSitterOptions,
-    Unclipped,
+    Unclipped, WordDiffKind,
     language_settings::{AllLanguageSettings, LanguageSettings},
 };
 
@@ -142,7 +142,10 @@ pub struct MultiBufferDiffHunk {
     /// The status of this hunk (added/modified/deleted and secondary status).
     pub status: DiffHunkStatus,
     /// The word diffs for this hunk.
-    pub word_diffs: Vec<Range<MultiBufferOffset>>,
+    pub word_diffs: Vec<(Range<MultiBufferOffset>, WordDiffKind)>,
+    /// Whether the word diffs were computed across the whole hunk, in which
+    /// case only its buffer text is shown.
+    pub is_block_diff: bool,
     pub excerpt_range: ExcerptRange<text::Anchor>,
     pub multi_buffer_range: Range<Anchor>,
 }
@@ -733,6 +736,7 @@ struct DiffTransformHunkInfo {
     hunk_secondary_status: DiffHunkSecondaryStatus,
     is_logically_deleted: bool,
     excerpt_end: ExcerptAnchor,
+    is_block_diff: bool,
 }
 
 impl Eq for DiffTransformHunkInfo {}
@@ -848,6 +852,9 @@ pub struct RowInfo {
     pub buffer_row: Option<u32>,
     pub multibuffer_row: Option<MultiBufferRow>,
     pub diff_status: Option<buffer_diff::DiffHunkStatus>,
+    /// Whether this row belongs to a hunk whose word diffs were computed across
+    /// the whole hunk.
+    pub is_block_diff: bool,
     pub expand_info: Option<ExpandInfo>,
     pub wrapped_buffer_row: Option<u32>,
 }
@@ -1166,6 +1173,7 @@ struct MultiBufferRegion<'a, MBD, BD> {
     buffer: &'a BufferSnapshot,
     is_main_buffer: bool,
     diff_hunk_status: Option<DiffHunkStatus>,
+    is_block_diff: bool,
     excerpt: &'a Excerpt,
     buffer_range: Range<BD>,
     range: Range<MBD>,
@@ -2927,6 +2935,7 @@ impl MultiBuffer {
                                 hunk_secondary_status: hunk.secondary_status,
                                 excerpt_end: excerpt.end_anchor(),
                                 is_logically_deleted: true,
+                                is_block_diff: hunk.is_block_diff,
                             };
                             *end_of_current_insert =
                                 Some((hunk_excerpt_end.min(excerpt_end), hunk_info));
@@ -2952,6 +2961,7 @@ impl MultiBuffer {
                             hunk_secondary_status: hunk.secondary_status,
                             excerpt_end: excerpt.end_anchor(),
                             is_logically_deleted: false,
+                            is_block_diff: hunk.is_block_diff,
                         };
 
                         let hunk_excerpt_start = excerpt_start
@@ -2997,6 +3007,9 @@ impl MultiBuffer {
                                 && hunk_buffer_range.start >= edit_buffer_start
                                 && hunk_buffer_range.start <= excerpt_buffer_end
                                 && snapshot.show_deleted_hunks
+                                // Hunks with block word diffs only show their buffer
+                                // text, with the changes highlighted within it.
+                                && !hunk.is_block_diff
                             {
                                 let base_text = diff.base_text();
                                 let mut text_cursor =
@@ -3514,48 +3527,55 @@ impl MultiBufferSnapshot {
                 range.end.row + 1
             };
 
-            let word_diffs =
-                (!hunk.base_word_diffs.is_empty() || !hunk.buffer_word_diffs.is_empty())
-                    .then(|| {
-                        let mut word_diffs = Vec::new();
+            let word_diffs = (!hunk.base_word_diffs.is_empty()
+                || !hunk.buffer_word_diffs.is_empty())
+            .then(|| {
+                let mut word_diffs = Vec::new();
 
-                        let hunk_start_offset = if is_inverted {
-                            Anchor::in_buffer(
-                                excerpt.path_key_index,
-                                buffer_snapshot.anchor_after(hunk.diff_base_byte_range.start),
-                            )
-                            .to_offset(self)
-                        } else {
-                            Anchor::in_buffer(excerpt.path_key_index, hunk.buffer_range.start)
-                                .to_offset(self)
-                        };
+                let hunk_start_offset = if is_inverted {
+                    Anchor::in_buffer(
+                        excerpt.path_key_index,
+                        buffer_snapshot.anchor_after(hunk.diff_base_byte_range.start),
+                    )
+                    .to_offset(self)
+                } else {
+                    Anchor::in_buffer(excerpt.path_key_index, hunk.buffer_range.start)
+                        .to_offset(self)
+                };
 
-                        let hunk_has_deleted_text = !is_inverted && {
-                            let mut cursor = self.diff_transforms.cursor::<MultiBufferOffset>(());
-                            cursor.seek(&hunk_start_offset, Bias::Right);
-                            matches!(
-                                cursor.item(),
-                                Some(DiffTransform::DeletedHunk { buffer_id, hunk_info, .. })
-                                    if *buffer_id == buffer_snapshot.remote_id()
-                                        && hunk_info.hunk_start_anchor == hunk.buffer_range.start
-                            )
-                        };
+                // Block diff hunks show only their new text, so their deleted side
+                // has no word diffs to place in the multibuffer.
+                let hunk_has_deleted_text = !is_inverted && !hunk.is_block_diff && {
+                    let mut cursor = self.diff_transforms.cursor::<MultiBufferOffset>(());
+                    cursor.seek(&hunk_start_offset, Bias::Right);
+                    matches!(
+                        cursor.item(),
+                        Some(DiffTransform::DeletedHunk { buffer_id, hunk_info, .. })
+                            if *buffer_id == buffer_snapshot.remote_id()
+                                && hunk_info.hunk_start_anchor == hunk.buffer_range.start
+                    )
+                };
 
-                        if hunk_has_deleted_text || is_inverted {
-                            word_diffs.extend(hunk.base_word_diffs.iter().map(|diff| {
-                                hunk_start_offset + diff.start..hunk_start_offset + diff.end
-                            }));
-                        }
+                if hunk_has_deleted_text || is_inverted {
+                    word_diffs.extend(hunk.base_word_diffs.iter().map(|(diff, kind)| {
+                        (
+                            hunk_start_offset + diff.start..hunk_start_offset + diff.end,
+                            *kind,
+                        )
+                    }));
+                }
 
-                        if !is_inverted {
-                            word_diffs.extend(hunk.buffer_word_diffs.into_iter().map(|diff| {
-                                Anchor::range_in_buffer(excerpt.path_key_index, diff)
-                                    .to_offset(self)
-                            }));
-                        }
-                        word_diffs
-                    })
-                    .unwrap_or_default();
+                if !is_inverted {
+                    word_diffs.extend(hunk.buffer_word_diffs.into_iter().map(|(diff, kind)| {
+                        (
+                            Anchor::range_in_buffer(excerpt.path_key_index, diff).to_offset(self),
+                            kind,
+                        )
+                    }));
+                }
+                word_diffs
+            })
+            .unwrap_or_default();
 
             let buffer_range = if is_inverted {
                 buffer_snapshot.anchor_after(hunk.diff_base_byte_range.start)
@@ -3577,6 +3597,7 @@ impl MultiBufferSnapshot {
                 buffer_id: buffer_snapshot.remote_id(),
                 buffer_range,
                 word_diffs,
+                is_block_diff: hunk.is_block_diff,
                 diff_base_byte_range: BufferOffset(hunk.diff_base_byte_range.start)
                     ..BufferOffset(hunk.diff_base_byte_range.end),
                 status: DiffHunkStatus {
@@ -7315,6 +7336,7 @@ where
                     diff_hunk_status: Some(DiffHunkStatus::deleted(
                         hunk_info.hunk_secondary_status,
                     )),
+                    is_block_diff: hunk_info.is_block_diff,
                     buffer_range: buffer_start..buffer_end,
                     range: start..end,
                 })
@@ -7370,6 +7392,7 @@ where
                     has_trailing_newline,
                     is_main_buffer: true,
                     diff_hunk_status,
+                    is_block_diff: inserted_hunk_info.is_some_and(|info| info.is_block_diff),
                     buffer_range: buffer_start..buffer_end,
                     range: start..end,
                 })
@@ -7924,6 +7947,7 @@ impl Iterator for MultiBufferRows<'_> {
                 diff_status: None,
                 expand_info: None,
                 wrapped_buffer_row: None,
+                is_block_diff: false,
             });
         }
 
@@ -7979,6 +8003,7 @@ impl Iterator for MultiBufferRows<'_> {
                     diff_status: None,
                     wrapped_buffer_row: None,
                     expand_info,
+                    is_block_diff: false,
                 });
             } else {
                 return None;
@@ -8021,6 +8046,7 @@ impl Iterator for MultiBufferRows<'_> {
             diff_status: region
                 .diff_hunk_status
                 .filter(|_| self.point < region.range.end),
+            is_block_diff: region.is_block_diff && self.point < region.range.end,
             expand_info,
             wrapped_buffer_row: None,
         });
