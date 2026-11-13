@@ -1,4 +1,4 @@
-use agent_client_protocol::schema::v1 as acp_v1;
+use agent_client_protocol::v1::schema as acp_v1;
 use chrono::{DateTime, Utc};
 use collections::HashMap;
 use serde::Deserialize;
