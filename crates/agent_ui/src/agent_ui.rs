@@ -372,6 +372,10 @@ actions!(
         ToggleFastMode,
         /// Switches between Fast and Ultrafast when faster responses are enabled.
         CycleResponseSpeed,
+        /// Toggles the voice input recording UI state for the active thread.
+        ToggleVoiceRecording,
+        /// Toggles the microphone selection menu for the active thread.
+        ToggleMicrophoneMenu,
         /// Scroll the output by one page up.
         ScrollOutputPageUp,
         /// Scroll the output by one page down.
@@ -1076,6 +1080,7 @@ mod tests {
             message_editor_min_lines: 1,
             tool_permissions: Default::default(),
             sandbox_permissions: Default::default(),
+            speech_to_text: Default::default(),
             show_turn_stats: false,
             show_usage_status: false,
             show_merge_conflict_indicator: true,
