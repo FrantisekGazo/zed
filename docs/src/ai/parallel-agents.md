@@ -29,6 +29,8 @@ To list the threads of each git worktree under their own heading, set [`agent.th
 
 To hide threads you haven't touched lately, click the clock button next to the sidebar's search field (or run {#action agents_sidebar::ToggleRecentThreads}). The sidebar then shows only threads active in the last 24 hours, plus any thread that is running, waiting for you, unread, or has an unsent draft. Typing a search still searches every thread. Change the window with [`agent.threads_sidebar.recent_hours`](../reference/all-settings.md#agent-threads-sidebar-recent-hours).
 
+To see only the threads of the project you're working in, click the folder button next to the clock button (or run {#action agents_sidebar::ToggleCurrentProjectThreads}). Other projects are hidden even if their threads are running or unread, and they come back while you type a search. You can combine both buttons to see only the current project's recent threads.
+
 ### Switching Threads {#switching-threads}
 
 Click any thread in the sidebar to switch to it. The Agent Panel updates to show that thread's conversation.

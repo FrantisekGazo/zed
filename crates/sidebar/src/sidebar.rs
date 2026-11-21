@@ -76,7 +76,9 @@ use git_ui_core::worktree_service::{RemoteBranchName, worktree_create_targets};
 use zed_actions::editor::{MoveDown, MoveUp};
 use zed_actions::{CreateWorktree, NewWorktreeBranchTarget, OpenRecent};
 
-use zed_actions::agents_sidebar::{FocusSidebarFilter, ToggleRecentThreads, ToggleThreadSwitcher};
+use zed_actions::agents_sidebar::{
+    FocusSidebarFilter, ToggleCurrentProjectThreads, ToggleRecentThreads, ToggleThreadSwitcher,
+};
 
 use crate::thread_switcher::{
     ThreadSwitcher, ThreadSwitcherEntry, ThreadSwitcherEvent, ThreadSwitcherSelection,
@@ -133,6 +135,8 @@ struct SerializedSidebar {
     active_view: SerializedSidebarView,
     #[serde(default)]
     show_recent_only: bool,
+    #[serde(default)]
+    show_current_project_only: bool,
 }
 
 #[derive(Debug, Default)]
@@ -503,12 +507,17 @@ impl From<TerminalEntry> for ListEntry {
 #[derive(Default)]
 struct SidebarContents {
     entries: Vec<ListEntry>,
-    /// Rows left out by the "Recent" filter, each group's rows preceded by its
-    /// header, so that the thread switcher can still list them.
-    entries_hidden_by_recent_filter: Vec<ListEntry>,
+    /// Rows left out by the "Recent" and "Current Project" filters, each
+    /// group's rows preceded by its header, so that the thread switcher can
+    /// still list them.
+    entries_hidden_by_filters: Vec<ListEntry>,
     notified_threads: HashSet<agent_ui::ThreadId>,
     notified_terminals: HashSet<TerminalId>,
     project_header_indices: Vec<usize>,
+    /// The groups `NextProject`/`PreviousProject` step through: the listed
+    /// ones plus those hidden by the "Current Project" filter, which would
+    /// otherwise leave nothing to cycle to.
+    project_cycle_keys: Vec<ProjectGroupKey>,
     has_open_projects: bool,
 }
 
@@ -899,6 +908,8 @@ pub struct Sidebar {
     active_entry: Option<ActiveEntry>,
     /// Whether to list only threads active within `agent.threads_sidebar.recent_hours`.
     show_recent_only: bool,
+    /// Whether to list only the threads of the active workspace's project group.
+    show_current_project_only: bool,
     hovered_thread_index: Option<usize>,
     rename_target: Option<RenameTarget>,
     /// Threads in the database-backed regeneration path need their own loading
@@ -1076,6 +1087,7 @@ impl Sidebar {
             selection: None,
             active_entry: None,
             show_recent_only: false,
+            show_current_project_only: false,
             hovered_thread_index: None,
             rename_target: None,
             regenerating_titles: HashSet::new(),
@@ -1557,6 +1569,7 @@ impl Sidebar {
     /// - Should always show every workspace in the multiworkspace
     ///     - If you have no threads, and two workspaces for the worktree and the main workspace, make sure at least one is shown
     /// - Should always show every thread, associated with each workspace in the multiworkspace
+    ///     - Except for rows hidden by the "Recent" and "Current Project" filters, which go to `entries_hidden_by_filters` instead
     /// - After every build_contents, our "active" state should exactly match the current workspace's, current agent panel's current thread.
     fn rebuild_contents(&mut self, cx: &App) {
         let Some(multi_workspace) = self.multi_workspace.upgrade() else {
@@ -1582,7 +1595,7 @@ impl Sidebar {
         let old_statuses = &self.live_thread_statuses;
 
         let mut entries = Vec::new();
-        let mut entries_hidden_by_recent_filter = Vec::new();
+        let mut entries_hidden_by_filters = Vec::new();
         let mut notified_threads = previous.notified_threads;
         let mut notified_terminals: HashSet<TerminalId> = HashSet::new();
         let mut new_live_statuses: HashMap<acp::SessionId, (AgentThreadStatus, ThreadId)> =
@@ -1591,6 +1604,7 @@ impl Sidebar {
         let mut current_thread_ids: HashSet<agent_ui::ThreadId> = HashSet::new();
         let mut current_terminal_ids: HashSet<TerminalId> = HashSet::new();
         let mut project_header_indices: Vec<usize> = Vec::new();
+        let mut project_cycle_keys: Vec<ProjectGroupKey> = Vec::new();
         let mut seen_thread_ids: HashSet<agent_ui::ThreadId> = HashSet::new();
         let mut seen_terminal_ids: HashSet<TerminalId> = HashSet::new();
 
@@ -1613,6 +1627,15 @@ impl Sidebar {
         };
 
         let groups = mw.project_groups(cx);
+        // Without a current project the filter would hide every group.
+        let current_project_only = self.show_current_project_only
+            && query.is_empty()
+            && groups.iter().any(|group| {
+                !group.key.path_list().paths().is_empty()
+                    && active_workspace
+                        .as_ref()
+                        .is_some_and(|active| group.workspaces.contains(active))
+            });
         let mut live_notified_terminal_ids: HashSet<TerminalId> = HashSet::new();
         for workspace in &workspaces {
             if let Some(agent_panel) = workspace.read(cx).panel::<AgentPanel>(cx) {
@@ -2107,6 +2130,7 @@ impl Sidebar {
                     .any(|t| notified_terminals.contains(&t.metadata.terminal_id));
 
                 project_header_indices.push(entries.len());
+                project_cycle_keys.push(group_key.clone());
                 entries.push(ListEntry::ProjectHeader {
                     key: group_key.clone(),
                     label: label.clone(),
@@ -2156,6 +2180,38 @@ impl Sidebar {
                         .any(|t| notified_threads.contains(&t.metadata.thread_id))
                 };
 
+                let mut hide_rows =
+                    |terminals: Vec<TerminalEntry>, threads: Vec<Arc<ThreadEntry>>| {
+                        // Hidden threads must stay in `current_thread_ids`, or the
+                        // retains below drop their unread state and access times.
+                        current_thread_ids
+                            .extend(threads.iter().map(|thread| thread.metadata.thread_id));
+                        if !threads.is_empty() || !terminals.is_empty() {
+                            entries_hidden_by_filters.push(ListEntry::ProjectHeader {
+                                key: group_key.clone(),
+                                label: label.clone(),
+                                highlight_positions: Vec::new(),
+                                has_running_threads,
+                                waiting_thread_count,
+                                has_notifications: false,
+                                is_active,
+                                has_threads,
+                            });
+                            entries_hidden_by_filters.extend(
+                                terminals
+                                    .into_iter()
+                                    .map(ListEntry::Terminal)
+                                    .chain(threads.into_iter().map(ListEntry::Thread)),
+                            );
+                        }
+                    };
+
+                if current_project_only && !is_active {
+                    hide_rows(terminals, threads);
+                    project_cycle_keys.push(group_key.clone());
+                    continue;
+                }
+
                 if let Some(cutoff) = recent_cutoff
                     && !is_collapsed
                 {
@@ -2172,28 +2228,7 @@ impl Sidebar {
                     threads = recent_threads;
                     terminals = recent_terminals;
 
-                    // Hidden threads must stay in `current_thread_ids`, or the
-                    // retains below drop their unread state and access times.
-                    current_thread_ids
-                        .extend(old_threads.iter().map(|thread| thread.metadata.thread_id));
-                    if !old_threads.is_empty() || !old_terminals.is_empty() {
-                        entries_hidden_by_recent_filter.push(ListEntry::ProjectHeader {
-                            key: group_key.clone(),
-                            label: label.clone(),
-                            highlight_positions: Vec::new(),
-                            has_running_threads,
-                            waiting_thread_count,
-                            has_notifications: false,
-                            is_active,
-                            has_threads,
-                        });
-                        entries_hidden_by_recent_filter.extend(
-                            old_terminals
-                                .into_iter()
-                                .map(ListEntry::Terminal)
-                                .chain(old_threads.into_iter().map(ListEntry::Thread)),
-                        );
-                    }
+                    hide_rows(old_terminals, old_threads);
 
                     // Keep the active group so a project without recent
                     // threads doesn't vanish while it's open.
@@ -2203,6 +2238,7 @@ impl Sidebar {
                 }
 
                 project_header_indices.push(entries.len());
+                project_cycle_keys.push(group_key.clone());
                 entries.push(ListEntry::ProjectHeader {
                     key: group_key.clone(),
                     label: label.clone(),
@@ -2243,10 +2279,11 @@ impl Sidebar {
 
         self.contents = SidebarContents {
             entries,
-            entries_hidden_by_recent_filter,
+            entries_hidden_by_filters,
             notified_threads,
             notified_terminals,
             project_header_indices,
+            project_cycle_keys,
             has_open_projects,
         };
     }
@@ -3761,6 +3798,17 @@ impl Sidebar {
     ) {
         self.show_recent_only = !self.show_recent_only;
         self.update_filter_placeholder(window, cx);
+        self.update_entries(cx);
+        self.serialize(cx);
+    }
+
+    fn toggle_current_project_threads(
+        &mut self,
+        _: &ToggleCurrentProjectThreads,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_current_project_only = !self.show_current_project_only;
         self.update_entries(cx);
         self.serialize(cx);
     }
@@ -6440,7 +6488,7 @@ impl Sidebar {
             .contents
             .entries
             .iter()
-            .chain(&self.contents.entries_hidden_by_recent_filter)
+            .chain(&self.contents.entries_hidden_by_filters)
             .filter_map(|entry| match entry {
                 ListEntry::ProjectHeader { label, key, .. } => {
                     current_header_label = Some(label.clone());
@@ -7746,30 +7794,22 @@ impl Sidebar {
         Some(multi_workspace.project_group_key_for_workspace(multi_workspace.workspace(), cx))
     }
 
-    fn active_project_header_position(&self, cx: &App) -> Option<usize> {
-        let active_key = self.active_project_group_key(cx)?;
-        self.contents
-            .project_header_indices
-            .iter()
-            .position(|&entry_ix| {
-                matches!(
-                    &self.contents.entries[entry_ix],
-                    ListEntry::ProjectHeader { key, .. } if *key == active_key
-                )
-            })
-    }
-
     fn cycle_project_impl(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(multi_workspace) = self.multi_workspace.upgrade() else {
             return;
         };
 
-        let header_count = self.contents.project_header_indices.len();
+        let header_count = self.contents.project_cycle_keys.len();
         if header_count == 0 {
             return;
         }
 
-        let current_pos = self.active_project_header_position(cx);
+        let current_pos = self.active_project_group_key(cx).and_then(|active_key| {
+            self.contents
+                .project_cycle_keys
+                .iter()
+                .position(|key| *key == active_key)
+        });
 
         let next_pos = match current_pos {
             Some(pos) => {
@@ -7782,12 +7822,9 @@ impl Sidebar {
             None => 0,
         };
 
-        let header_entry_ix = self.contents.project_header_indices[next_pos];
-        let Some(ListEntry::ProjectHeader { key, .. }) = self.contents.entries.get(header_entry_ix)
-        else {
+        let Some(key) = self.contents.project_cycle_keys.get(next_pos).cloned() else {
             return;
         };
-        let key = key.clone();
 
         // Uncollapse the target group so that threads become visible.
         self.set_group_expanded(&key, true, cx);
@@ -8039,6 +8076,27 @@ impl Sidebar {
                                     })
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.toggle_recent_threads(&ToggleRecentThreads, window, cx);
+                                    }))
+                            })
+                            .child({
+                                let show_current_project_only = self.show_current_project_only;
+                                IconButton::new("toggle_current_project_threads", IconName::Folder)
+                                    .icon_size(IconSize::Small)
+                                    .toggle_state(show_current_project_only)
+                                    .tooltip(move |_, cx| {
+                                        let label = if show_current_project_only {
+                                            "Show Threads from All Projects"
+                                        } else {
+                                            "Show Only Threads from the Current Project"
+                                        };
+                                        Tooltip::for_action(label, &ToggleCurrentProjectThreads, cx)
+                                    })
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.toggle_current_project_threads(
+                                            &ToggleCurrentProjectThreads,
+                                            window,
+                                            cx,
+                                        );
                                     }))
                             })
                             .when(has_query, |this| {
@@ -8571,6 +8629,7 @@ impl WorkspaceSidebar for Sidebar {
                 SidebarView::Archive(_) => SerializedSidebarView::History,
             },
             show_recent_only: self.show_recent_only,
+            show_current_project_only: self.show_current_project_only,
         };
         serde_json::to_string(&serialized).ok()
     }
@@ -8590,8 +8649,11 @@ impl WorkspaceSidebar for Sidebar {
                 self.width = px(width).clamp(THREADS_LIST_MIN_WIDTH, THREADS_LIST_MAX_WIDTH);
                 self.width_set_by_user = true;
             }
-            if serialized.show_recent_only != self.show_recent_only {
+            if serialized.show_recent_only != self.show_recent_only
+                || serialized.show_current_project_only != self.show_current_project_only
+            {
                 self.show_recent_only = serialized.show_recent_only;
+                self.show_current_project_only = serialized.show_current_project_only;
                 self.update_filter_placeholder(window, cx);
                 // Restoring runs inside a `MultiWorkspace` update, which
                 // rebuilding reads, so the rebuild has to wait.
@@ -8651,6 +8713,7 @@ impl Render for Sidebar {
             .on_action(cx.listener(Self::toggle_archive))
             .on_action(cx.listener(Self::focus_sidebar_filter))
             .on_action(cx.listener(Self::toggle_recent_threads))
+            .on_action(cx.listener(Self::toggle_current_project_threads))
             .on_action(cx.listener(Self::on_toggle_thread_switcher))
             .on_action(cx.listener(Self::on_next_project))
             .on_action(cx.listener(Self::on_previous_project))
