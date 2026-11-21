@@ -949,7 +949,7 @@ impl LocalImageStore {
     }
 }
 
-fn create_gpui_image(content: Vec<u8>) -> anyhow::Result<Arc<gpui::Image>> {
+pub fn create_gpui_image(content: Vec<u8>) -> anyhow::Result<Arc<gpui::Image>> {
     let format = match image::guess_format(&content) {
         Ok(format) => format,
         Err(_) => {
