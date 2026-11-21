@@ -943,6 +943,8 @@ pub mod agents_sidebar {
             FocusSidebarFilter,
             /// Toggles between showing all threads and only recently active threads.
             ToggleRecentThreads,
+            /// Toggles between showing the threads of all projects and only those of the current project.
+            ToggleCurrentProjectThreads,
         ]
     );
 }

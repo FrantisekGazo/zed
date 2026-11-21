@@ -808,6 +808,8 @@
       "enter": "menu::Confirm",
       "cmd-f": "agents_sidebar::FocusSidebarFilter",
       "cmd-g": "agents_sidebar::ToggleThreadHistory",
+      "cmd-alt-r": "agents_sidebar::ToggleRecentThreads",
+      "cmd-alt-p": "agents_sidebar::ToggleCurrentProjectThreads",
       "shift-backspace": "agent::ArchiveSelectedThread",
       "cmd-shift-backspace": "agent::RemoveSelectedThread",
       "ctrl-tab": "agents_sidebar::ToggleThreadSwitcher",

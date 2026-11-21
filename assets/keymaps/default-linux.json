@@ -753,6 +753,8 @@
       "enter": "menu::Confirm",
       "ctrl-f": "agents_sidebar::FocusSidebarFilter",
       "ctrl-g": "agents_sidebar::ToggleThreadHistory",
+      "ctrl-alt-r": "agents_sidebar::ToggleRecentThreads",
+      "ctrl-alt-p": "agents_sidebar::ToggleCurrentProjectThreads",
       "shift-backspace": "agent::ArchiveSelectedThread",
       "ctrl-backspace": "agent::RemoveSelectedThread",
       "ctrl-tab": "agents_sidebar::ToggleThreadSwitcher",
