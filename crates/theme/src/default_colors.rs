@@ -28,6 +28,12 @@ const MODIFIED_COLOR: Hsla = Hsla {
     l: 0.47,
     a: 1.0,
 };
+const WORD_MODIFIED_COLOR: Hsla = Hsla {
+    h: 48. / 360.,
+    s: 0.76,
+    l: 0.47,
+    a: 0.35,
+};
 const REMOVED_COLOR: Hsla = Hsla {
     h: 350. / 360.,
     s: 0.88,
@@ -138,6 +144,9 @@ impl ThemeColors {
             editor_diff_hunk_deleted_background: REMOVED_COLOR.opacity(0.16),
             editor_diff_hunk_deleted_hollow_background: REMOVED_COLOR.opacity(0.08),
             editor_diff_hunk_deleted_hollow_border: REMOVED_COLOR.opacity(0.48),
+            editor_diff_hunk_modified_background: MODIFIED_COLOR.opacity(0.16),
+            editor_diff_hunk_modified_hollow_background: MODIFIED_COLOR.opacity(0.08),
+            editor_diff_hunk_modified_hollow_border: MODIFIED_COLOR.opacity(0.48),
             terminal_background: neutral().light().step_1(),
             terminal_foreground: black().light().step_12(),
             terminal_bright_foreground: black().light().step_11(),
@@ -176,6 +185,7 @@ impl ThemeColors {
             version_control_ignored: gray().light().step_12(),
             version_control_word_added: WORD_ADDED_COLOR,
             version_control_word_deleted: WORD_DELETED_COLOR,
+            version_control_word_modified: WORD_MODIFIED_COLOR,
             version_control_conflict_marker_ours: green().light().step_10().alpha(0.5),
             version_control_conflict_marker_theirs: blue().light().step_10().alpha(0.5),
             vim_normal_background: system.transparent,
@@ -292,6 +302,9 @@ impl ThemeColors {
             editor_diff_hunk_deleted_background: REMOVED_COLOR.opacity(0.12),
             editor_diff_hunk_deleted_hollow_background: REMOVED_COLOR.opacity(0.06),
             editor_diff_hunk_deleted_hollow_border: REMOVED_COLOR.opacity(0.36),
+            editor_diff_hunk_modified_background: MODIFIED_COLOR.opacity(0.12),
+            editor_diff_hunk_modified_hollow_background: MODIFIED_COLOR.opacity(0.06),
+            editor_diff_hunk_modified_hollow_border: MODIFIED_COLOR.opacity(0.36),
             terminal_background: neutral().dark().step_1(),
             terminal_ansi_background: neutral().dark().step_1(),
             terminal_foreground: white().dark().step_12(),
@@ -330,6 +343,7 @@ impl ThemeColors {
             version_control_ignored: gray().dark().step_12(),
             version_control_word_added: WORD_ADDED_COLOR,
             version_control_word_deleted: WORD_DELETED_COLOR,
+            version_control_word_modified: WORD_MODIFIED_COLOR,
             version_control_conflict_marker_ours: green().dark().step_10().alpha(0.5),
             version_control_conflict_marker_theirs: blue().dark().step_10().alpha(0.5),
             vim_normal_background: system.transparent,
