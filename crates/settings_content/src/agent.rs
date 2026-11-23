@@ -324,6 +324,12 @@ pub struct AgentSettingsContent {
     ///
     /// Default: "primary_screen"
     pub notify_when_agent_waiting: Option<NotifyWhenAgentWaiting>,
+    /// Whether to show agent notifications even while the threads sidebar is open,
+    /// where the thread's status is already visible. Notifications are still skipped
+    /// for the thread that is open in the agent panel of the focused window.
+    ///
+    /// Default: false
+    pub notify_when_threads_sidebar_open: Option<bool>,
     /// When to play a sound when the agent has either completed its response, or needs user input.
     ///
     /// Default: never

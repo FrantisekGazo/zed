@@ -7092,6 +7092,7 @@ See [Agent Panel](#agent-panel) for width, flexible sizing, and Threads Sidebar 
 | `inline_assistant_use_streaming_tools` | `true`                                          | Use streaming tools for inline assists when supported by the selected model.                          |
 | `commit_message_include_project_rules` | `true`                                          | Include project instruction files when generating Git commit messages.                                |
 | `notify_when_agent_waiting`            | `"primary_screen"`                              | Notification display: `"primary_screen"`, `"all_screens"`, or `"never"`.                              |
+| `notify_when_threads_sidebar_open`     | `false`                                         | Show notifications even while the threads sidebar is open.                                            |
 | `play_sound_when_agent_done`           | `"never"`                                       | Completion and input-required sounds: `"never"`, `"when_hidden"`, or `"always"`.                      |
 | `expand_edit_card`                     | `true`                                          | Expand new edit cards to show diffs.                                                                  |
 | `expand_terminal_card`                 | `true`                                          | Expand new terminal cards to show output.                                                             |

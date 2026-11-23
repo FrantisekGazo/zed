@@ -1059,6 +1059,7 @@ mod tests {
             default_profile: AgentProfileId::default(),
             profiles: Default::default(),
             notify_when_agent_waiting: NotifyWhenAgentWaiting::default(),
+            notify_when_threads_sidebar_open: false,
             play_sound_when_agent_done: PlaySoundWhenAgentDone::Never,
             prevent_idle_sleep: true,
             single_file_review: false,
