@@ -19464,6 +19464,117 @@ async fn test_current_project_threads_follows_active_workspace(cx: &mut TestAppC
 }
 
 #[gpui::test]
+async fn test_current_project_threads_only_lists_active_worktree(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        "/project",
+        serde_json::json!({
+            ".git": {},
+            "src": {},
+        }),
+    )
+    .await;
+    for (path, branch) in [("/wt-feature-a", "feature-a"), ("/wt-feature-b", "feature-b")] {
+        fs.add_linked_worktree_for_repo(
+            Path::new("/project/.git"),
+            false,
+            git::repository::Worktree {
+                path: PathBuf::from(path),
+                ref_name: Some(format!("refs/heads/{branch}").into()),
+                sha: "aaa".into(),
+                is_main: false,
+                is_bare: false,
+            },
+        )
+        .await;
+    }
+    cx.update(|cx| <dyn fs::Fs>::set_global(fs.clone(), cx));
+
+    let main_project = project::Project::test(fs.clone(), ["/project".as_ref()], cx).await;
+    let worktree_project = project::Project::test(fs.clone(), ["/wt-feature-a".as_ref()], cx).await;
+    main_project
+        .update(cx, |project, cx| project.git_scans_complete(cx))
+        .await;
+    worktree_project
+        .update(cx, |project, cx| project.git_scans_complete(cx))
+        .await;
+
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(main_project.clone(), window, cx));
+    let sidebar = setup_sidebar(&multi_workspace, cx);
+    let worktree_workspace = multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+        multi_workspace.test_add_workspace(worktree_project.clone(), window, cx)
+    });
+    let main_workspace = multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+        let workspace = multi_workspace
+            .workspaces()
+            .next()
+            .expect("the main workspace should exist")
+            .clone();
+        multi_workspace.activate(workspace.clone(), None, window, cx);
+        workspace
+    });
+
+    let main_paths = PathList::new(&[PathBuf::from("/project")]);
+    for (session_id, title, path, hour) in [
+        ("main-thread", "Main Thread", "/project", 1),
+        ("feature-a-thread", "Feature A Thread", "/wt-feature-a", 2),
+        ("feature-b-thread", "Feature B Thread", "/wt-feature-b", 3),
+    ] {
+        save_thread_metadata_with_main_paths(
+            session_id,
+            title,
+            PathList::new(&[PathBuf::from(path)]),
+            main_paths.clone(),
+            thread_time(hour),
+            cx,
+        );
+    }
+    multi_workspace.update_in(cx, |_, _window, cx| cx.notify());
+    cx.run_until_parked();
+
+    let all_worktrees = vec![
+        //
+        "v [project]",
+        "  Feature B Thread {wt-feature-b}",
+        "  Feature A Thread {wt-feature-a}",
+        "  Main Thread",
+    ];
+    assert_eq!(visible_entries_as_strings(&sidebar, cx), all_worktrees);
+
+    toggle_current_project_threads(&sidebar, cx);
+    assert_eq!(
+        visible_entries_as_strings(&sidebar, cx),
+        vec![
+            //
+            "v [project]",
+            "  Main Thread",
+        ]
+    );
+
+    multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+        multi_workspace.activate(worktree_workspace, None, window, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        visible_entries_as_strings(&sidebar, cx),
+        vec![
+            //
+            "v [project]",
+            "  Feature A Thread {wt-feature-a}",
+        ]
+    );
+
+    multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+        multi_workspace.activate(main_workspace, None, window, cx);
+    });
+    cx.run_until_parked();
+    toggle_current_project_threads(&sidebar, cx);
+    assert_eq!(visible_entries_as_strings(&sidebar, cx), all_worktrees);
+}
+
+#[gpui::test]
 async fn test_current_project_threads_toggle_is_persisted(cx: &mut TestAppContext) {
     let project = init_test_project("/my-project", cx).await;
     let (multi_workspace, cx) =

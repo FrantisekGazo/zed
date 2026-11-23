@@ -1636,6 +1636,13 @@ impl Sidebar {
                         .as_ref()
                         .is_some_and(|active| group.workspaces.contains(active))
             });
+        // A project group spans all linked git worktrees of a repository, so
+        // the filter also narrows the active group down to the rows of the
+        // worktree that the active workspace has open.
+        let current_worktree_paths = active_workspace
+            .as_ref()
+            .filter(|_| current_project_only)
+            .map(|active| workspace_path_list(active, cx));
         let mut live_notified_terminal_ids: HashSet<TerminalId> = HashSet::new();
         for workspace in &workspaces {
             if let Some(agent_panel) = workspace.read(cx).panel::<AgentPanel>(cx) {
@@ -2154,31 +2161,31 @@ impl Sidebar {
                     &mut current_thread_ids,
                 );
             } else {
-                let has_terminal_notifications = terminals
+                let mut has_terminal_notifications = terminals
                     .iter()
                     .any(|t| notified_terminals.contains(&t.metadata.terminal_id));
 
                 // When collapsed, threads aren't loaded into `threads`, so we
                 // query the store for thread IDs to check notifications and
                 // to prevent the retain below from purging them.
-                let has_thread_notifications = if threads.is_empty() && !notified_threads.is_empty()
-                {
-                    let thread_store = ThreadMetadataStore::global(cx);
-                    let store = thread_store.read(cx);
-                    let group_thread_ids = store
-                        .entries_for_main_worktree_path(group_key.path_list(), group_host)
-                        .chain(store.entries_for_path(group_key.path_list(), group_host))
-                        .map(|m| m.thread_id)
-                        .collect::<HashSet<_>>();
-                    current_thread_ids.extend(group_thread_ids.iter());
-                    group_thread_ids
-                        .iter()
-                        .any(|id| notified_threads.contains(id))
-                } else {
-                    threads
-                        .iter()
-                        .any(|t| notified_threads.contains(&t.metadata.thread_id))
-                };
+                let mut has_thread_notifications =
+                    if threads.is_empty() && !notified_threads.is_empty() {
+                        let thread_store = ThreadMetadataStore::global(cx);
+                        let store = thread_store.read(cx);
+                        let group_thread_ids = store
+                            .entries_for_main_worktree_path(group_key.path_list(), group_host)
+                            .chain(store.entries_for_path(group_key.path_list(), group_host))
+                            .map(|m| m.thread_id)
+                            .collect::<HashSet<_>>();
+                        current_thread_ids.extend(group_thread_ids.iter());
+                        group_thread_ids
+                            .iter()
+                            .any(|id| notified_threads.contains(id))
+                    } else {
+                        threads
+                            .iter()
+                            .any(|t| notified_threads.contains(&t.metadata.thread_id))
+                    };
 
                 let mut hide_rows =
                     |terminals: Vec<TerminalEntry>, threads: Vec<Arc<ThreadEntry>>| {
@@ -2210,6 +2217,28 @@ impl Sidebar {
                     hide_rows(terminals, threads);
                     project_cycle_keys.push(group_key.clone());
                     continue;
+                }
+
+                if let Some(current_worktree_paths) = &current_worktree_paths {
+                    let (current_threads, other_threads): (Vec<_>, Vec<_>) =
+                        threads.into_iter().partition(|thread| {
+                            thread.metadata.folder_paths() == current_worktree_paths
+                        });
+                    let (current_terminals, other_terminals): (Vec<_>, Vec<_>) =
+                        terminals.into_iter().partition(|terminal| {
+                            terminal.metadata.folder_paths() == current_worktree_paths
+                        });
+                    threads = current_threads;
+                    terminals = current_terminals;
+                    hide_rows(other_terminals, other_threads);
+                    if should_load_threads {
+                        has_thread_notifications = threads
+                            .iter()
+                            .any(|thread| notified_threads.contains(&thread.metadata.thread_id));
+                    }
+                    has_terminal_notifications = terminals.iter().any(|terminal| {
+                        notified_terminals.contains(&terminal.metadata.terminal_id)
+                    });
                 }
 
                 if let Some(cutoff) = recent_cutoff
