@@ -240,6 +240,24 @@ Open the Settings Editor and search for “Threads Sidebar Group By”. Or add t
 }
 ```
 
+### Threads Sidebar Recent Hours {#agent-threads-sidebar-recent-hours}
+
+- Description: How many hours back the [Threads Sidebar](../ai/parallel-agents.md#threads-sidebar)'s "Recent" filter reaches. Toggle the filter with the clock button next to the sidebar's search field.
+- Setting: `agent.threads_sidebar.recent_hours`
+- Default: `24`
+
+Open the Settings Editor and search for “Threads Sidebar Recent Hours”. Or add this to your `settings.json`:
+
+```json [settings]
+{
+  "agent": {
+    "threads_sidebar": {
+      "recent_hours": 48
+    }
+  }
+}
+```
+
 ## Agent UI Font Family {#agent-ui-font-family}
 
 - Description: Font family for agent responses in the Agent Panel.
