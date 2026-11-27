@@ -3561,13 +3561,20 @@ impl ConversationView {
         self.show_notification(caption, icon, window, cx);
     }
 
-    fn is_visible(&self, multi_workspace: &Entity<MultiWorkspace>, cx: &Context<Self>) -> bool {
+    fn is_visible(
+        &self,
+        multi_workspace: &Entity<MultiWorkspace>,
+        include_threads_list: bool,
+        cx: &Context<Self>,
+    ) -> bool {
         let Some(workspace) = self.workspace.upgrade() else {
             return false;
         };
 
         let multi_workspace = multi_workspace.read(cx);
-        multi_workspace.sidebar_open() && multi_workspace.is_threads_list_view_active(cx)
+        include_threads_list
+            && multi_workspace.sidebar_open()
+            && multi_workspace.is_threads_list_view_active(cx)
             || multi_workspace.workspace() == &workspace
                 && self.is_visible_in_agent_panel(&workspace, cx)
     }
@@ -3592,7 +3599,9 @@ impl ConversationView {
         }
 
         if let Some(multi_workspace) = window.root::<MultiWorkspace>().flatten() {
-            self.is_visible(&multi_workspace, cx)
+            let include_threads_list =
+                !AgentSettings::get_global(cx).notify_when_threads_sidebar_open;
+            self.is_visible(&multi_workspace, include_threads_list, cx)
         } else {
             self.workspace
                 .upgrade()
@@ -3604,7 +3613,7 @@ impl ConversationView {
     fn play_notification_sound(&self, window: &Window, cx: &mut Context<Self>) {
         let visible = window.is_window_active()
             && if let Some(mw) = window.root::<MultiWorkspace>().flatten() {
-                self.is_visible(&mw, cx)
+                self.is_visible(&mw, true, cx)
             } else {
                 self.workspace
                     .upgrade()
@@ -10127,6 +10136,117 @@ pub(crate) mod tests {
     }
 
     #[gpui::test]
+    async fn test_notification_when_sidebar_open_and_notify_when_threads_sidebar_open(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+
+        cx.update(|cx| {
+            cx.update_flags(true, vec!["agent-v2".to_string()]);
+            agent::ThreadStore::init_global(cx);
+            language_model::LanguageModelRegistry::test(cx);
+            <dyn Fs>::set_global(fs.clone(), cx);
+            AgentSettings::override_global(
+                AgentSettings {
+                    notify_when_threads_sidebar_open: true,
+                    ..AgentSettings::get_global(cx).clone()
+                },
+                cx,
+            );
+        });
+
+        let project = Project::test(fs, [], cx).await;
+        let multi_workspace_handle =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+
+        let workspace = multi_workspace_handle
+            .read_with(cx, |mw, _cx| mw.workspace().clone())
+            .unwrap();
+
+        let cx = &mut VisualTestContext::from_window(multi_workspace_handle.into(), cx);
+        register_test_sidebar(true, cx);
+
+        multi_workspace_handle
+            .update(cx, |mw, _window, cx| {
+                mw.open_sidebar(cx);
+            })
+            .unwrap();
+
+        cx.run_until_parked();
+
+        let thread_store = cx.update(|_window, cx| cx.new(|cx| ThreadStore::new(cx)));
+        let connection_store =
+            cx.update(|_window, cx| cx.new(|cx| AgentConnectionStore::new(project.clone(), cx)));
+
+        let conversation_view = cx.update(|window, cx| {
+            cx.new(|cx| {
+                ConversationView::new(
+                    Rc::new(StubAgentServer::default_response()),
+                    connection_store,
+                    Agent::Custom { id: "Test".into() },
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    workspace.downgrade(),
+                    project.clone(),
+                    Some(thread_store),
+                    AgentThreadSource::AgentPanel,
+                    window,
+                    cx,
+                )
+            })
+        });
+
+        cx.run_until_parked();
+
+        let message_editor = message_editor(&conversation_view, cx);
+        message_editor.update_in(cx, |editor, window, cx| {
+            editor.set_text("Hello", window, cx);
+        });
+
+        active_thread(&conversation_view, cx)
+            .update_in(cx, |view, window, cx| view.send(window, cx));
+
+        cx.run_until_parked();
+
+        let notification_count = |cx: &mut VisualTestContext| {
+            cx.windows()
+                .iter()
+                .filter(|window| window.downcast::<AgentNotification>().is_some())
+                .count()
+        };
+
+        assert_eq!(
+            notification_count(cx),
+            1,
+            "Expected a notification while the sidebar is open when notify_when_threads_sidebar_open is set"
+        );
+
+        multi_workspace_handle
+            .update(cx, |mw, window, cx| {
+                mw.close_sidebar(window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        multi_workspace_handle
+            .update(cx, |mw, _window, cx| {
+                mw.open_sidebar(cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        assert_eq!(
+            notification_count(cx),
+            1,
+            "Notification should not auto-dismiss when the sidebar opens if notify_when_threads_sidebar_open is set"
+        );
+    }
+
+    #[gpui::test]
     async fn test_notification_when_workspace_is_background_in_multi_workspace(
         cx: &mut TestAppContext,
     ) {
@@ -10385,6 +10505,7 @@ pub(crate) mod tests {
             AgentSettings::override_global(
                 AgentSettings {
                     notify_when_agent_waiting: NotifyWhenAgentWaiting::Never,
+                    notify_when_threads_sidebar_open: false,
                     ..AgentSettings::get_global(cx).clone()
                 },
                 cx,
@@ -17254,6 +17375,7 @@ pub(crate) mod tests {
             AgentSettings::override_global(
                 AgentSettings {
                     notify_when_agent_waiting: NotifyWhenAgentWaiting::Never,
+                    notify_when_threads_sidebar_open: false,
                     ..AgentSettings::get_global(cx).clone()
                 },
                 cx,
@@ -17369,6 +17491,7 @@ pub(crate) mod tests {
             AgentSettings::override_global(
                 AgentSettings {
                     notify_when_agent_waiting: NotifyWhenAgentWaiting::Never,
+                    notify_when_threads_sidebar_open: false,
                     ..AgentSettings::get_global(cx).clone()
                 },
                 cx,
@@ -17464,6 +17587,7 @@ pub(crate) mod tests {
             AgentSettings::override_global(
                 AgentSettings {
                     notify_when_agent_waiting: NotifyWhenAgentWaiting::Never,
+                    notify_when_threads_sidebar_open: false,
                     ..AgentSettings::get_global(cx).clone()
                 },
                 cx,
@@ -17562,6 +17686,7 @@ pub(crate) mod tests {
             AgentSettings::override_global(
                 AgentSettings {
                     notify_when_agent_waiting: NotifyWhenAgentWaiting::Never,
+                    notify_when_threads_sidebar_open: false,
                     ..AgentSettings::get_global(cx).clone()
                 },
                 cx,
@@ -17668,6 +17793,7 @@ pub(crate) mod tests {
             AgentSettings::override_global(
                 AgentSettings {
                     notify_when_agent_waiting: NotifyWhenAgentWaiting::Never,
+                    notify_when_threads_sidebar_open: false,
                     ..AgentSettings::get_global(cx).clone()
                 },
                 cx,
@@ -17751,6 +17877,7 @@ pub(crate) mod tests {
             AgentSettings::override_global(
                 AgentSettings {
                     notify_when_agent_waiting: NotifyWhenAgentWaiting::Never,
+                    notify_when_threads_sidebar_open: false,
                     ..AgentSettings::get_global(cx).clone()
                 },
                 cx,
@@ -17834,6 +17961,7 @@ pub(crate) mod tests {
             AgentSettings::override_global(
                 AgentSettings {
                     notify_when_agent_waiting: NotifyWhenAgentWaiting::Never,
+                    notify_when_threads_sidebar_open: false,
                     ..AgentSettings::get_global(cx).clone()
                 },
                 cx,
@@ -18009,6 +18137,7 @@ pub(crate) mod tests {
             AgentSettings::override_global(
                 AgentSettings {
                     notify_when_agent_waiting: NotifyWhenAgentWaiting::Never,
+                    notify_when_threads_sidebar_open: false,
                     ..AgentSettings::get_global(cx).clone()
                 },
                 cx,
@@ -18089,6 +18218,7 @@ pub(crate) mod tests {
             AgentSettings::override_global(
                 AgentSettings {
                     notify_when_agent_waiting: NotifyWhenAgentWaiting::Never,
+                    notify_when_threads_sidebar_open: false,
                     ..AgentSettings::get_global(cx).clone()
                 },
                 cx,
@@ -18696,6 +18826,7 @@ pub(crate) mod tests {
             AgentSettings::override_global(
                 AgentSettings {
                     notify_when_agent_waiting: NotifyWhenAgentWaiting::Never,
+                    notify_when_threads_sidebar_open: false,
                     ..AgentSettings::get_global(cx).clone()
                 },
                 cx,
@@ -20640,6 +20771,7 @@ pub(crate) mod tests {
             AgentSettings::override_global(
                 AgentSettings {
                     notify_when_agent_waiting: NotifyWhenAgentWaiting::Never,
+                    notify_when_threads_sidebar_open: false,
                     ..AgentSettings::get_global(cx).clone()
                 },
                 cx,

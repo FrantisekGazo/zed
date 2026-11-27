@@ -237,6 +237,7 @@ pub struct AgentSettings {
     pub profiles: IndexMap<AgentProfileId, AgentProfileSettings>,
 
     pub notify_when_agent_waiting: NotifyWhenAgentWaiting,
+    pub notify_when_threads_sidebar_open: bool,
     pub play_sound_when_agent_done: PlaySoundWhenAgentDone,
     pub prevent_idle_sleep: bool,
     pub single_file_review: bool,
@@ -857,6 +858,7 @@ impl Settings for AgentSettings {
                 .collect(),
 
             notify_when_agent_waiting: agent.notify_when_agent_waiting.unwrap(),
+            notify_when_threads_sidebar_open: agent.notify_when_threads_sidebar_open.unwrap(),
             play_sound_when_agent_done: agent.play_sound_when_agent_done.unwrap_or_default(),
             prevent_idle_sleep: agent.prevent_idle_sleep.unwrap(),
             single_file_review: agent.single_file_review.unwrap(),

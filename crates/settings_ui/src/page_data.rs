@@ -9544,6 +9544,29 @@ fn ai_page(cx: &App) -> SettingsPage {
                 files: USER,
             }),
             SettingsPageItem::SettingItem(SettingItem {
+                title: "Notify When Threads Sidebar Open",
+                description: "Whether to show agent notifications even while the threads sidebar is open. They are still skipped for the thread open in the agent panel of the focused window.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("agent.notify_when_threads_sidebar_open"),
+                    pick: |settings_content| {
+                        settings_content
+                            .agent
+                            .as_ref()?
+                            .notify_when_threads_sidebar_open
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .agent
+                            .get_or_insert_default()
+                            .notify_when_threads_sidebar_open = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
                 title: "Play Sound When Agent Done",
                 description: "When to play a sound when the agent has either completed its response, or needs user input.",
                 field: Box::new(SettingField {

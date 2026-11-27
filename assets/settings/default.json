@@ -1381,6 +1381,12 @@
     // "all_screens" - Show these notifications on all screens
     // "never" - Never show these notifications
     "notify_when_agent_waiting": "primary_screen",
+    // Whether to show these notifications even while the threads sidebar
+    // is open, where the thread's status is already visible. They are still
+    // skipped for the thread open in the agent panel of the focused window.
+    //
+    // Default: false
+    "notify_when_threads_sidebar_open": false,
     // When to play a sound when the agent has either completed
     // its response, or needs user input.
     // "never" - Never play the sound

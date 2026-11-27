@@ -2791,7 +2791,7 @@ impl AgentPanel {
             cx.notify();
             #[cfg(feature = "audio")]
             self.play_terminal_notification_sound(
-                self.terminal_status_visible(terminal_id, window, cx),
+                self.terminal_status_visible(terminal_id, true, window, cx),
                 cx,
             );
             self.show_terminal_notification(terminal_id, window, cx);
@@ -2811,10 +2811,15 @@ impl AgentPanel {
             return;
         }
         let title = terminal.title(cx);
-        if self.terminal_status_visible(terminal_id, window, cx) {
+        let settings = AgentSettings::get_global(cx);
+        if self.terminal_status_visible(
+            terminal_id,
+            !settings.notify_when_threads_sidebar_open,
+            window,
+            cx,
+        ) {
             return;
         }
-        let settings = AgentSettings::get_global(cx);
         match settings.notify_when_agent_waiting {
             NotifyWhenAgentWaiting::PrimaryScreen => {
                 window.request_attention();
@@ -3011,14 +3016,23 @@ impl AgentPanel {
             && matches!(self.visible_surface(), VisibleSurface::Terminal(_))
     }
 
-    fn terminal_status_visible(&self, terminal_id: TerminalId, window: &Window, cx: &App) -> bool {
+    fn terminal_status_visible(
+        &self,
+        terminal_id: TerminalId,
+        include_threads_list: bool,
+        window: &Window,
+        cx: &App,
+    ) -> bool {
         if !window.is_window_active() {
             return false;
         }
 
         if let Some(multi_workspace) = window.root::<MultiWorkspace>().flatten() {
             let multi_workspace = multi_workspace.read(cx);
-            if multi_workspace.sidebar_open() && multi_workspace.is_threads_list_view_active(cx) {
+            if include_threads_list
+                && multi_workspace.sidebar_open()
+                && multi_workspace.is_threads_list_view_active(cx)
+            {
                 return true;
             }
 
@@ -3043,7 +3057,8 @@ impl AgentPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.terminal_status_visible(terminal_id, window, cx) {
+        let include_threads_list = !AgentSettings::get_global(cx).notify_when_threads_sidebar_open;
+        if !self.terminal_status_visible(terminal_id, include_threads_list, window, cx) {
             return;
         }
         if self.active_terminal_visible(terminal_id, window, cx)
@@ -10047,6 +10062,7 @@ mod tests {
             AgentSettings::override_global(
                 AgentSettings {
                     notify_when_agent_waiting: NotifyWhenAgentWaiting::PrimaryScreen,
+                    notify_when_threads_sidebar_open: false,
                     ..AgentSettings::get_global(cx).clone()
                 },
                 cx,
@@ -11285,6 +11301,71 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_terminal_bell_notifies_when_sidebar_open_and_notify_when_threads_sidebar_open(
+        cx: &mut TestAppContext,
+    ) {
+        let (panel, mut cx) = setup_visible_panel(cx).await;
+        cx.update(|_window, cx| {
+            AgentSettings::override_global(
+                AgentSettings {
+                    notify_when_threads_sidebar_open: true,
+                    ..AgentSettings::get_global(cx).clone()
+                },
+                cx,
+            );
+        });
+        let first_terminal_id = panel
+            .update_in(&mut cx, |panel, window, cx| {
+                panel.insert_test_terminal("Build", true, window, cx)
+            })
+            .expect("first test terminal should be inserted");
+        panel
+            .update_in(&mut cx, |panel, window, cx| {
+                panel.insert_test_terminal("Server", true, window, cx)
+            })
+            .expect("second test terminal should be inserted");
+        cx.run_until_parked();
+
+        cx.update(|window, cx| {
+            let multi_workspace = window
+                .root::<MultiWorkspace>()
+                .flatten()
+                .expect("test window should have a MultiWorkspace root");
+            multi_workspace.update(cx, |multi_workspace, cx| {
+                multi_workspace.open_sidebar(cx);
+            });
+        });
+        cx.run_until_parked();
+
+        panel.update(&mut cx, |panel, cx| {
+            panel.emit_test_terminal_bell(first_terminal_id, cx);
+        });
+        cx.run_until_parked();
+
+        cx.windows()
+            .iter()
+            .find_map(|window| window.downcast::<AgentNotification>())
+            .expect("terminal bell should notify while the sidebar is open");
+
+        cx.update(|window, cx| {
+            let multi_workspace = window
+                .root::<MultiWorkspace>()
+                .flatten()
+                .expect("test window should have a MultiWorkspace root");
+            multi_workspace.update(cx, |multi_workspace, cx| {
+                multi_workspace.close_sidebar(window, cx);
+                multi_workspace.open_sidebar(cx);
+            });
+        });
+        cx.run_until_parked();
+
+        cx.windows()
+            .iter()
+            .find_map(|window| window.downcast::<AgentNotification>())
+            .expect("notification should not auto-dismiss when the sidebar opens");
+    }
+
+    #[gpui::test]
     async fn test_terminal_bell_notifies_when_sidebar_history_open(cx: &mut TestAppContext) {
         let (panel, mut cx) = setup_visible_panel_with_sidebar(cx, false).await;
         let first_terminal_id = panel
@@ -11484,6 +11565,7 @@ mod tests {
             AgentSettings::override_global(
                 AgentSettings {
                     notify_when_agent_waiting: NotifyWhenAgentWaiting::PrimaryScreen,
+                    notify_when_threads_sidebar_open: false,
                     ..AgentSettings::get_global(cx).clone()
                 },
                 cx,
@@ -11551,6 +11633,7 @@ mod tests {
             AgentSettings::override_global(
                 AgentSettings {
                     notify_when_agent_waiting: NotifyWhenAgentWaiting::PrimaryScreen,
+                    notify_when_threads_sidebar_open: false,
                     ..AgentSettings::get_global(cx).clone()
                 },
                 cx,
@@ -11599,6 +11682,7 @@ mod tests {
             AgentSettings::override_global(
                 AgentSettings {
                     notify_when_agent_waiting: NotifyWhenAgentWaiting::PrimaryScreen,
+                    notify_when_threads_sidebar_open: false,
                     ..AgentSettings::get_global(cx).clone()
                 },
                 cx,
