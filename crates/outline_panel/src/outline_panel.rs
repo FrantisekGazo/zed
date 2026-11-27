@@ -6,7 +6,8 @@ use db::kvp::KeyValueStore;
 use editor::{
     AnchorRangeExt, Bias, DisplayPoint, Editor, EditorEvent, ExcerptRange, MultiBufferSnapshot,
     RangeToAnchorExt, SelectionEffects,
-    display_map::ToDisplayPoint,
+    ToPoint as _,
+    display_map::{Block, DisplayRow, ToDisplayPoint},
     items::{entry_git_aware_label_color, entry_label_color},
     scroll::{Autoscroll, ScrollAnchor},
 };
@@ -1550,7 +1551,10 @@ impl OutlinePanel {
                         && multi_buffer_snapshot.as_singleton().is_none()
                         && !active_editor.read(cx).is_buffer_folded(buffer_id, cx)
                     {
-                        offset.y = -(active_editor.read(cx).file_header_size() as f64);
+                        let file_header_size = active_editor.read(cx).file_header_size();
+                        let rows_above = rows_above_excerpt_start(&active_editor, anchor, cx)
+                            .unwrap_or(file_header_size);
+                        offset.y = -(rows_above as f64);
                     }
 
                     active_editor.update(cx, |editor, cx| {
@@ -5983,6 +5987,39 @@ impl GenerationState {
     }
 }
 
+/// Counts the display rows from an excerpt's header down to the excerpt's first line. Besides the
+/// header, this includes blocks placed above that line, such as image diffs, which would otherwise
+/// be scrolled out of view.
+fn rows_above_excerpt_start(
+    editor: &Entity<Editor>,
+    excerpt_start: editor::Anchor,
+    cx: &mut App,
+) -> Option<u32> {
+    let display_snapshot = editor.update(cx, |editor, cx| editor.display_snapshot(cx));
+    let buffer_snapshot = display_snapshot.buffer_snapshot();
+    let start_point = excerpt_start.to_point(buffer_snapshot);
+    let start_row = start_point.to_display_point(&display_snapshot).row();
+    // Begin after the previous line so the previous excerpt's blocks are not counted.
+    let search_start = match start_point.row.checked_sub(1) {
+        Some(previous_row) => {
+            let previous_line_end = buffer_snapshot
+                .clip_point(language::Point::new(previous_row, u32::MAX), Bias::Left);
+            previous_line_end.to_display_point(&display_snapshot).row() + 1
+        }
+        None => DisplayRow(0),
+    };
+    display_snapshot
+        .blocks_in_range(search_start..start_row)
+        .filter(|(_, block)| {
+            matches!(
+                block,
+                Block::BufferHeader { .. } | Block::ExcerptBoundary { .. }
+            )
+        })
+        .last()
+        .map(|(header_row, _)| start_row.0 - header_row.0)
+}
+
 #[cfg(test)]
 mod tests {
     use buffer_diff::BufferDiff;
@@ -8429,6 +8466,97 @@ two/  <==== selected
             ),
             cx,
         );
+    }
+
+    #[gpui::test]
+    async fn test_file_entry_scrolls_to_blocks_above_first_line(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                "dir": {
+                    "a.txt": "first\nsecond",
+                    "b.txt": "third\nfourth",
+                }
+            }),
+        )
+        .await;
+        let project = Project::test(fs.clone(), [Path::new(path!("/root"))], cx).await;
+        let (workspace, outline_panel, mut cx) = active_outline_panel(&project, cx).await;
+        let cx = &mut cx;
+
+        let buffer_a = open_buffer(&project, path!("/root/dir/a.txt"), cx).await;
+        let buffer_b = open_buffer(&project, path!("/root/dir/b.txt"), cx).await;
+        let editor = add_multi_buffer_editor(
+            &workspace,
+            &project,
+            &[(&buffer_a, Vec::new()), (&buffer_b, Vec::new())],
+            cx,
+        );
+        flush_outline_tasks(cx);
+
+        const BLOCK_HEIGHT: u32 = 7;
+        let buffer_b_id = buffer_b.read_with(cx, |buffer, _cx| buffer.remote_id());
+        editor.update(cx, |editor, cx| {
+            let snapshot = editor.buffer().read(cx).snapshot(cx);
+            let buffer_b_start = snapshot
+                .excerpts_for_buffer(buffer_b_id)
+                .next()
+                .and_then(|excerpt| snapshot.anchor_in_excerpt(excerpt.context.start))
+                .expect("b.txt should have an excerpt");
+            editor.insert_blocks(
+                [editor::display_map::BlockProperties {
+                    placement: editor::display_map::BlockPlacement::Above(buffer_b_start),
+                    height: Some(BLOCK_HEIGHT),
+                    style: editor::display_map::BlockStyle::Fixed,
+                    render: Arc::new(|cx| {
+                        div()
+                            .h(cx.line_height * BLOCK_HEIGHT as f32)
+                            .into_any_element()
+                    }),
+                    priority: 0,
+                }],
+                None,
+                cx,
+            );
+        });
+
+        let file_header_size = editor.read_with(cx, |editor, _cx| editor.file_header_size());
+        for (path, expected_offset) in [
+            ("dir/a.txt", file_header_size),
+            ("dir/b.txt", file_header_size + BLOCK_HEIGHT),
+        ] {
+            let file_row = outline_panel.read_with(cx, |outline_panel, _cx| {
+                outline_panel
+                    .cached_entries
+                    .iter()
+                    .find_map(|cached_entry| match &cached_entry.entry {
+                        PanelEntry::Fs(FsEntry::File(file))
+                            if file.entry.path.as_ref() == rel_path(path) =>
+                        {
+                            Some(cached_entry.entry.clone())
+                        }
+                        _ => None,
+                    })
+                    .expect("the file should have a row")
+            });
+            outline_panel.update_in(cx, |outline_panel, window, cx| {
+                outline_panel.select_entry(file_row, true, window, cx);
+                outline_panel.open_selected_entry(&OpenSelectedEntry, window, cx);
+            });
+            cx.run_until_parked();
+
+            let scroll_offset = editor.update(cx, |editor, cx| {
+                editor.scroll_manager.shared_scroll_anchor(cx).scroll_anchor.offset.y
+            });
+            assert_eq!(
+                scroll_offset,
+                -(expected_offset as f64),
+                "{path} should scroll to its header, keeping the blocks above its first line visible"
+            );
+        }
     }
 
     #[gpui::test]
