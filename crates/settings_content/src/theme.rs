@@ -932,6 +932,21 @@ pub struct ThemeColorsContent {
     #[serde(rename = "editor.diff_hunk.added.hollow_border")]
     pub editor_diff_hunk_added_hollow_border: Option<ThemeColor>,
 
+    /// Filled background color for rows of diff hunks whose changed words are
+    /// highlighted across the whole hunk.
+    #[serde(rename = "editor.diff_hunk.modified.background")]
+    pub editor_diff_hunk_modified_background: Option<ThemeColor>,
+
+    /// Hollow background color for rows of diff hunks whose changed words are
+    /// highlighted across the whole hunk.
+    #[serde(rename = "editor.diff_hunk.modified.hollow_background")]
+    pub editor_diff_hunk_modified_hollow_background: Option<ThemeColor>,
+
+    /// Hollow border color for rows of diff hunks whose changed words are
+    /// highlighted across the whole hunk.
+    #[serde(rename = "editor.diff_hunk.modified.hollow_border")]
+    pub editor_diff_hunk_modified_hollow_border: Option<ThemeColor>,
+
     /// Filled background color for deleted diff hunk row highlights in the editor.
     #[serde(rename = "editor.diff_hunk.deleted.background")]
     pub editor_diff_hunk_deleted_background: Option<ThemeColor>,
@@ -1094,6 +1109,10 @@ pub struct ThemeColorsContent {
     /// Color for deleted words in word diffs.
     #[serde(rename = "version_control.word_deleted")]
     pub version_control_word_deleted: Option<ThemeColor>,
+
+    /// Color for words replaced by other words in word diffs.
+    #[serde(rename = "version_control.word_modified")]
+    pub version_control_word_modified: Option<ThemeColor>,
 
     /// Background color for row highlights of "ours" regions in merge conflicts.
     #[serde(rename = "version_control.conflict_marker.ours")]

@@ -55,7 +55,8 @@ use gpui::{
     Subscription, Task, TaskExt, WeakEntity,
 };
 use language::{
-    Anchor, Buffer, BufferEvent, Capability, Language, LanguageRegistry,
+    Anchor, Buffer, BufferEvent, Capability, Language, LanguageRegistry, WordDiffSettings,
+    WordDiffStyle,
     proto::{deserialize_version, serialize_version},
 };
 use parking_lot::Mutex;
@@ -111,6 +112,7 @@ pub struct GitStore {
     repositories: HashMap<RepositoryId, Entity<Repository>>,
     parked_repositories: Vec<ParkedRepository>,
     diff_base: GitDiffBaseSetting,
+    word_diff_style: WordDiffStyle,
     display_diffs: HashMap<RepositoryId, DisplayDiff>,
     worktree_ids: HashMap<RepositoryId, HashSet<WorktreeId>>,
     active_repo_id: Option<RepositoryId>,
@@ -1188,6 +1190,18 @@ impl GitStore {
         _subscriptions.push(cx.observe_global::<SettingsStore>(|this, cx| {
             let setting = ProjectSettings::get_global(cx).git.diff_base;
             this.set_diff_base(setting, cx);
+            let word_diff_style = WordDiffSettings::global_style(cx);
+            if word_diff_style != this.word_diff_style {
+                this.word_diff_style = word_diff_style;
+                let buffer_store = this.buffer_store.read(cx);
+                let buffers = this
+                    .diffs
+                    .keys()
+                    .filter_map(|buffer_id| buffer_store.get(*buffer_id))
+                    .collect();
+                let recalculation = this.recalculate_buffer_diffs(buffers, cx);
+                cx.spawn(async move |_, _| recalculation.await).detach();
+            }
             this.activate_parked_repositories_where_parking_disabled(cx);
         }));
 
@@ -1200,6 +1214,7 @@ impl GitStore {
             repositories: HashMap::default(),
             parked_repositories: Vec::new(),
             diff_base: diff_base_setting,
+            word_diff_style: WordDiffSettings::global_style(cx),
             display_diffs: HashMap::default(),
             worktree_ids: HashMap::default(),
             active_repo_id: None,
